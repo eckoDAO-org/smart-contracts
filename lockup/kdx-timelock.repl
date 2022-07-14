@@ -1,0 +1,392 @@
+(load "../wrapper/init.repl")
+(load "../kadenaswap/util/guards.repl")
+
+(begin-tx)
+
+(env-data
+  { 'kaddex-keyset: ["kaddex-keyset"]
+  , 'kaddex-ops: ["kaddex-ops"]
+  , 'kaddex-ns-admin: ["kaddex-admin"]
+  , 'kaddex-ns-user: ["kaddex-user"]
+  , 'ns: "kaddex"
+  , 'upgrade: false
+  , 'dummy-token-supply: 100000.0 })
+
+(env-keys ["kaddex-keyset", "kaddex-ops", "kaddex-admin", "kaddex-user"])
+(define-keyset 'kaddex-ops)
+(load "dummy-token.pact")
+(load "kdx-sale.pact")
+(load "kdx-timelock.pact")
+
+(typecheck "kaddex.time-lock")
+(commit-tx)
+
+(begin-tx "Setup")
+(env-data
+  { 'emily: ["emily"]
+  , 'darlene: ["darlene"]
+  , 'charlie: ["charlie"]
+  , 'bob: ["bob"]
+  , 'alice: ["alice"]
+  })
+
+(read-keyset 'alice)
+(read-keyset 'bob)
+(read-keyset 'charlie)
+(read-keyset 'darlene)
+(read-keyset 'emily)
+
+(test-capability (coin.COINBASE))
+
+(coin.coinbase "emily" (read-keyset 'emily) 1000.0)
+(coin.coinbase "darlene" (read-keyset 'darlene) 1000.0)
+(coin.coinbase "charlie" (read-keyset 'charlie) 1000.0)
+(coin.coinbase "bob" (read-keyset 'bob) 1000.0)
+(coin.coinbase "alice" (read-keyset 'alice) 10000.0)
+(coin.coinbase kaddex.time-lock.KDX_BANK (kaddex.time-lock.kdx-bank-guard) 100000.0)
+
+(env-sigs
+  [ { 'key: 'kaddex-admin
+    , 'caps: [ (kaddex.dummy-token.TRANSFER kaddex.dummy-token.ISSUANCE_ACCOUNT kaddex.time-lock.KDX_BANK 100000.0) ]}])
+(with-applied-env
+  (kaddex.dummy-token.transfer kaddex.dummy-token.ISSUANCE_ACCOUNT kaddex.time-lock.KDX_BANK 100000.0))
+
+(env-sigs
+  [ { 'key: 'kaddex-admin
+    , 'caps: []}])
+(with-applied-env
+  (kaddex.kdx.mint 'network-rewards kaddex.time-lock.KDX_BANK (kaddex.time-lock.kdx-bank-guard) 100000.0))
+
+(module fixture G
+
+  (defcap G () true)
+  (defun reserve (account:string amount:decimal)
+    (env-sigs
+      [ { 'key: account
+        , 'caps: [ (coin.TRANSFER account kaddex.priv-sale.KDX_BANK amount) ]}])
+    (env-chain-data { 'block-time: (add-time kaddex.priv-sale.START_TIME 180) })
+    (with-applied-env
+      (kaddex.priv-sale.reserve account amount))
+  )
+
+  (defun lock (account:string option:string)
+    (env-keys [account])
+    (with-applied-env
+      (kaddex.time-lock.lock account account (at 'guard (coin.details account)) option))
+  )
+
+  (defun lock-to-other
+    ( account:string
+      receiver-account:string
+      receiver-guard:guard
+    )
+    (env-keys [account])
+    (with-applied-env
+      (kaddex.time-lock.lock account receiver-account receiver-guard "3 months"))
+  )
+
+  (defun return-at-simulated-time
+    ( account:string
+      time:time)
+    (env-chain-data { 'block-time: time })
+    (with-applied-env (at 'kda (kaddex.time-lock.calculate-return account time)))
+  )
+
+  (defun return-error-helper:decimal
+    ( account:string
+      time-list:[time]
+      expected-return-list:[decimal]
+      index:integer
+    )
+    (let*
+      ( (picked-time (at index time-list))
+        (expected-return (floor (at index expected-return-list) (coin.precision)))
+        (calculated-return (return-at-simulated-time account picked-time))
+      )
+      { 'human: (format "At index {}, time {}, expected return of {}, received {} from contract"
+                [index picked-time expected-return calculated-return])
+      , 'expected: expected-return
+      , 'received: calculated-return
+      , 'error: (- expected-return calculated-return)
+      , 'time: picked-time
+      , 'index: index
+      }
+    )
+  )
+
+  (defun clamp:decimal
+    ( min:decimal
+      max:decimal
+      val:decimal
+    )
+    (if (< val min) min
+      (if (> val max) max
+        val
+      )
+    )
+  )
+
+  (defun return-calculate-helper:decimal
+    ( max-return:decimal
+      total-intervals:decimal
+      intervals-into:decimal
+    )
+    (clamp 0.0 max-return
+      (if (> intervals-into total-intervals) max-return
+        (floor
+          (* max-return (/ (floor intervals-into) total-intervals))
+          (coin.precision)
+        )
+      )
+    )
+  )
+
+  (defun test-staggered-lockup (account:string)
+    (let*
+      ( (lockup-record (kaddex.time-lock.read-lockup account))
+        (lockup-start (at 'lockup-start-time lockup-record))
+        (lockup-end (at 'lockup-end-time lockup-record))
+        (lockup-length (diff-time lockup-end lockup-start))
+        (kda-return (at 'kda-total-return lockup-record))
+        (kdx-return (at 'kdx-total-return lockup-record))
+        (interval-length kaddex.time-lock.LOCKUP_INTERVAL_LENGTH)
+        (actual-interval-count (/ lockup-length interval-length))
+        (floored-interval-count (floor actual-interval-count))
+        (ceiling-interval-count (ceiling actual-interval-count))
+        (interval-boundaries (enumerate 0 ceiling-interval-count))
+        (boundaries-shifted-left (map (+ -0.001) interval-boundaries))
+        (boundaries-shifted-right (map (+ 0.001) interval-boundaries))
+        (times-left (map (compose (* interval-length) (add-time lockup-start)) boundaries-shifted-left))
+        (times-right (map (compose (* interval-length) (add-time lockup-start)) boundaries-shifted-right))
+        (expected-return-left (map
+          (return-calculate-helper kda-return actual-interval-count)
+          boundaries-shifted-left))
+        (expected-return-right (map
+          (return-calculate-helper kda-return actual-interval-count)
+          boundaries-shifted-right))
+        (left-return-error (map
+          (return-error-helper account times-left expected-return-left)
+          interval-boundaries))
+        (right-return-error (map
+          (return-error-helper account times-right expected-return-right)
+          interval-boundaries))
+      )
+      (+ left-return-error right-return-error)
+    )
+  )
+)
+
+(commit-tx)
+
+(begin-tx "Create private sale reservations")
+
+(use kaddex.priv-sale)
+
+(fixture.reserve 'darlene 50.0)
+(fixture.reserve 'charlie 140.0)
+(fixture.reserve 'bob 10.0)
+(fixture.reserve 'alice 90.0)
+
+(commit-tx)
+
+(begin-tx "Approve all private sale reservations and end private sale")
+
+(env-keys ['kaddex-ops])
+
+(kaddex.priv-sale.approve-all)
+(kaddex.priv-sale.end-sale)
+
+(commit-tx)
+
+(kaddex.priv-sale.read-all-reservations)
+
+(begin-tx "Create lockup requests")
+; before lockup is allowed
+(env-chain-data { 'block-time: (add-time kaddex.time-lock.START_TIME (days -1)) })
+(expect-failure "Lockup registration hasn't opened yet" (fixture.lock 'bob))
+
+; after lockup is allowed
+(env-chain-data { 'block-time: (add-time kaddex.time-lock.END_TIME (days 1)) })
+(expect-failure "Lockup registration has ended" (fixture.lock 'bob))
+
+; in lockup registration period
+(env-chain-data { 'block-time: (add-time kaddex.time-lock.START_TIME (days 1)) })
+(expect ""
+  "charlie requested lockup of 1400.0 KDX, with 1.400000000000 KDA and 56.000000000000 KDX returned to emily over 3 months."
+  (fixture.lock-to-other 'charlie 'emily (read-keyset 'emily)))
+(expect ""
+  "bob requested lockup of 100.0 KDX, with 0.100000000000 KDA and 4.000000000000 KDX returned to bob over 3 months."
+  (fixture.lock 'bob "3 months"))
+(expect ""
+  "alice requested lockup of 900.0 KDX, with 0.900000000000 KDA and 36.000000000000 KDX returned to alice over 3 months."
+  (fixture.lock 'alice "3 months"))
+(expect ""
+  "darlene requested lockup of 500.0 KDX, with 0.000000000000 KDA and 0.000000000000 KDX returned to darlene over asap."
+  (fixture.lock 'darlene "asap"))
+
+(expect "Lockup request has not been approved" false (kaddex.time-lock.is-kdx-locked 'bob))
+(expect "Lockup request has not been approved" false (kaddex.time-lock.is-kdx-locked 'alice))
+
+(commit-tx)
+
+(kaddex.time-lock.read-all-lockups)
+
+(begin-tx "Approve lockups")
+(env-keys ['kaddex-ops])
+; approve only bob, charlie, and darlene
+(kaddex.time-lock.approve 'bob)
+(kaddex.time-lock.approve 'charlie)
+(kaddex.time-lock.approve 'darlene)
+(commit-tx)
+
+(env-keys [])
+(kaddex.time-lock.read-all-lockups)
+
+(begin-tx "Test claim-return and is-kdx-locked correctness before lockup period begins")
+; before lockup starts for bob
+(env-chain-data { 'block-time:
+  (add-time (at 'lockup-start-time (kaddex.time-lock.read-lockup 'bob)) (days -1)) })
+
+; print records
+(map (kaddex.time-lock.available-return) (kaddex.time-lock.list-lockup-accounts))
+
+(env-keys ['bob])
+
+(expect-failure
+  "Lockup period has not started" (kaddex.time-lock.claim-return 'bob 1.0))
+
+(expect "Lockup request approved" true (kaddex.time-lock.is-kdx-locked 'bob))
+(commit-tx)
+
+(begin-tx "At least one lockup interval must pass for rewards to accumulate")
+; just under the interval into the lockup period
+(env-chain-data
+  { 'block-time:
+  (add-time (at 'lockup-start-time (kaddex.time-lock.read-lockup 'bob))
+    (- kaddex.time-lock.LOCKUP_INTERVAL_LENGTH 30.0)) })
+
+(env-keys ['bob])
+
+(chain-data)
+; print records pre-claim
+(map (kaddex.time-lock.available-return) (kaddex.time-lock.list-lockup-accounts))
+(expect-failure "No amount released until the first lockup interval passes"
+  (kaddex.time-lock.claim-return 'bob 0.00001))
+(commit-tx)
+
+(begin-tx)
+
+(fixture.test-staggered-lockup 'bob)
+(let ((failures (filter (compose (at 'error) (!= 0.0)) (fixture.test-staggered-lockup 'bob))))
+  (expect "No mismatches found in staggered lockup tests" 0 (length failures))
+)
+
+(commit-tx)
+
+(begin-tx "0-length release and reward test")
+(env-chain-data
+  { 'block-time:
+  (add-time (at 'lockup-start-time (kaddex.time-lock.read-lockup 'darlene)) -1.0) })
+
+(expect "asap-locked KDX is not yet unlocked 1 second before lockup period" true
+  (kaddex.time-lock.is-kdx-locked 'darlene))
+
+(env-chain-data
+  { 'block-time:
+  (add-time (at 'lockup-start-time (kaddex.time-lock.read-lockup 'darlene)) 1.0) })
+
+(expect "asap-locked KDX is unlocked 1 second into lockup period" false
+  (kaddex.time-lock.is-kdx-locked 'darlene))
+
+(expect "asap-locked KDX must not return any rewards" { 'kda: 0.0, 'kdx: 0.0 }
+  (kaddex.time-lock.available-return 'darlene))
+
+(commit-tx)
+
+(begin-tx "is-kdx-lockup sanity checks")
+
+; 45 days into 3 month lockup period for bob
+(env-chain-data
+  { 'block-time:
+  (add-time (at 'lockup-start-time (kaddex.time-lock.read-lockup 'bob))
+    (- kaddex.time-lock.LOCKUP_INTERVAL_LENGTH (days 45))) })
+
+(expect "Lockup request approved" true (kaddex.time-lock.is-kdx-locked 'bob))
+(expect "Lockup request approved" true (kaddex.time-lock.is-kdx-locked 'charlie))
+(expect "Lockup request has not been approved" false (kaddex.time-lock.is-kdx-locked 'alice))
+(expect "Never requested lockup" false (kaddex.time-lock.is-kdx-locked 'emily))
+
+; print records pre-claim
+(map (kaddex.time-lock.available-return) (kaddex.time-lock.list-lockup-accounts))
+(commit-tx)
+
+(begin-tx "Bob claims 2 intervals into lockup period")
+
+; 61 days (2 intervals) into 3 month lockup period for bob
+(env-chain-data
+  { 'block-time:
+  (add-time (at 'lockup-start-time (kaddex.time-lock.read-lockup 'bob)) (days 61)) })
+
+(env-keys [])
+(expect-failure "Keyset failure" (kaddex.time-lock.claim-return 'bob 1.0))
+
+(env-keys ['bob])
+
+(expect "Successful return claim" { "kda": 0.066666666666,"kdx": 2.666666666666 }
+  (kaddex.time-lock.claim-return 'bob))
+
+(expect "bob's payout is sent to bob"
+  [{ "module-hash": (at 'hash (describe-module "kaddex.dummy-token"))
+   , "name": "kaddex.dummy-token.TRANSFER"
+   , "params": ["kdx-lockup-reward-bank" "bob" 0.066666666666 ]}
+   { "module-hash": (at 'hash (describe-module "kaddex.kdx"))
+   , "name": "kaddex.kdx.TRANSFER"
+   , "params": ["kdx-lockup-reward-bank" "bob" 2.666666666666 ]}]
+  (env-events true))
+
+(commit-tx)
+
+(begin-tx "Test claim-return remaining reward and failure on unapproved request")
+(expect-failure "Should not have enough left over"
+  (kaddex.time-lock.claim-return 'bob 1.0))
+
+(env-keys ['alice])
+
+(expect-failure "Lockup request not approved"
+  (kaddex.time-lock.claim-return 'alice 1.0))
+
+(env-events true)
+(commit-tx)
+
+(begin-tx "Test different payout destination")
+(print (at 'block-time (chain-data)))
+
+(env-keys ['charlie])
+(kaddex.time-lock.claim-return 'charlie)
+(expect "Charlie's payout is sent to Emily"
+  [{ "module-hash": (at 'hash (describe-module "kaddex.dummy-token"))
+   , "name": "kaddex.dummy-token.TRANSFER"
+   , "params": ["kdx-lockup-reward-bank" "emily" 0.933333333333]}
+   { "module-hash": (at 'hash (describe-module "kaddex.kdx"))
+   , "name": "kaddex.kdx.TRANSFER"
+   , "params": ["kdx-lockup-reward-bank" "emily" 37.333333333333]}]
+  (env-events true))
+
+; print records post-claim
+(map (kaddex.time-lock.available-return) (kaddex.time-lock.list-lockup-accounts))
+
+(env-events true)
+(commit-tx)
+
+(begin-tx "KDX released after lockup period is up")
+
+; more than 3 months have passed
+(env-chain-data
+  { 'block-time:
+  (add-time (at 'lockup-start-time (kaddex.time-lock.read-lockup 'bob)) (days 91)) })
+
+(expect "Lockup time is up" false (kaddex.time-lock.is-kdx-locked 'bob))
+(expect "Lockup request has not been approved" false (kaddex.time-lock.is-kdx-locked 'alice))
+(expect "Never requested lockup" false (kaddex.time-lock.is-kdx-locked 'emily))
+
+(commit-tx)

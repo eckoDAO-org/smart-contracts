@@ -1,0 +1,132 @@
+(load "../init.repl")
+
+(begin-tx)
+(env-data { 'ns: "kaddex", 'upgrade: false, 'admin-keyset: ['admin]})
+(env-data
+  { 'kaddex-ns-user: ["kaddex-user"]
+   , 'kaddex-ns-admin: ["kaddex-admin"]
+   , 'token-wrapper: ["wrap"]
+   , 'base-token-admin-keyset: ["kaddex-admin"]
+   , 'bob: ["bob"]
+   , 'alice: ["alice"]
+   , 'ns: "kaddex"
+   , 'upgrade: false
+   , 'base-token-supply: 1000000.0
+   , 'token-a-supply: 0.0
+   , 'token-b-supply: 0.0})
+(env-keys ["operate", "kaddex-user", "kaddex-admin", "bob", "alice"])
+
+(env-dynref fungible-v2 coin)
+(env-dynref kaddex.swap-callable-v1 kaddex.noop-callable)
+
+(commit-tx)
+
+(begin-tx "Register prefixes with Alchemist")
+(env-keys ["kaddex-admin" "kaddex-ops"])
+
+(kaddex.alchemist.register-prefix kaddex.skdx 'hey)
+(kaddex.alchemist.grant-privilege kaddex.skdx 'wrap (read-keyset 'token-wrapper))
+(kaddex.alchemist.grant-privilege kaddex.skdx 'unwrap (read-keyset 'token-wrapper))
+
+(kaddex.alchemist.register-prefix kaddex.vkdx 'hey)
+(kaddex.alchemist.grant-privilege kaddex.vkdx 'wrap (read-keyset 'token-wrapper))
+(kaddex.alchemist.grant-privilege kaddex.vkdx 'unwrap (read-keyset 'token-wrapper))
+
+(commit-tx)
+
+(begin-tx "Mint kdx to bob")
+
+(env-sigs
+  [ { 'key: 'kaddex-admin
+     , 'caps:
+      [ ]}])
+(env-chain-data { 'chain-id: "0" })
+(with-applied-env [ (kaddex.kdx.mint 'network-rewards 'Bob (read-keyset 'bob) 1000.0)])
+
+(commit-tx)
+
+(begin-tx "Test wrapping skdx to skdx")
+
+(env-sigs
+  [ { 'key: "bob"
+    , 'caps: [ (kaddex.kdx.WRAP kaddex.skdx 'Bob 'Bob 1.0) ]}
+    { 'key: "wrap"
+    , 'caps: [] } ])
+
+(with-applied-env
+  (kaddex.alchemist.wrap 1.0 kaddex.skdx 'Bob 'Bob (read-keyset 'bob)))
+
+(commit-tx)
+
+(begin-tx "Test wrap failure when wrapper keyset not in message")
+
+(env-sigs
+  [ { 'key: "bob"
+    , 'caps: [ (kaddex.skdx.TRANSFER "Bob" (kaddex.alchemist.get-holder-account kaddex.skdx) 2.0) ]}
+  ])
+
+(with-applied-env
+  (expect-failure "should be unable to wrap"
+    (kaddex.alchemist.wrap 1.0 kaddex.skdx 'Bob 'Bob (read-keyset 'bob))))
+
+(env-keys ['kaddex-admin])
+(test-capability (kaddex.skdx.GOVERNANCE))
+(map (read kaddex.skdx.supply-table) (keys kaddex.skdx.supply-table))
+(commit-tx)
+
+
+(begin-tx "Test unwrapping skdx to skdx")
+
+(env-sigs
+  [ { 'key: "bob"
+    , 'caps: [
+      (kaddex.kdx.UNWRAP kaddex.skdx 'Bob 'Bob 1.0)
+      (kaddex.skdx.DEBIT "Bob")
+       ]}
+    { 'key: "wrap"
+    , 'caps: [] }
+  ])
+
+(with-applied-env
+  (kaddex.alchemist.unwrap 1.0 kaddex.skdx 'Bob 'Bob (read-keyset 'bob)))
+
+(rollback-tx)
+
+(begin-tx "Populate vKDX reserves for attack test")
+
+(env-sigs
+  [ { 'key: "bob"
+    , 'caps: [ (kaddex.kdx.WRAP kaddex.vkdx 'Bob 'Bob 10.0) ]}
+    { 'key: "wrap"
+    , 'caps: [] } ])
+
+(with-applied-env
+  (kaddex.alchemist.wrap 10.0 kaddex.vkdx 'Bob 'Bob (read-keyset 'bob)))
+
+(commit-tx)
+
+(begin-tx "Use reserves from one prefix to pay for other")
+
+(env-data { 'attacker: ['attacker] })
+(env-sigs
+  [ { 'key: 'attacker
+    , 'caps: [(kaddex.vkdx.DEBIT 'attacker)]}
+    { 'key: "wrap", 'caps: [] }])
+
+(expect-failure "Cannot wrap with KDX belonging to alchemist"
+  (kaddex.alchemist.wrap 1.0 kaddex.vkdx (kaddex.alchemist.get-holder-account kaddex.skdx) "attacker" (read-keyset 'attacker)))
+
+(rollback-tx)
+
+(begin-tx "Attempt to unwrap someone else's sKDX")
+
+(env-data { 'attacker: ['attacker] })
+(env-sigs
+  [ { 'key: 'attacker
+    , 'caps: [(kaddex.skdx.DEBIT 'Bob)]}
+    { 'key: "wrap", 'caps: [] }])
+
+(expect-failure "attacker cannot unwrap bob's skdx"
+  (kaddex.alchemist.unwrap 1.0 kaddex.skdx "Bob" "attacker" (read-keyset 'attacker)))
+
+(rollback-tx)

@@ -1,0 +1,355 @@
+
+(begin-tx)
+(env-data
+ { 'ns-admin-keyset: ["admin"]
+ , 'ns-operate-keyset: ["operate"]
+ , 'ns-genesis-keyset: { "keys": [], "pred": "="} })
+(load "root/fungible-v2.pact")
+(load "root/coin.pact")
+(load "root/ns.pact")
+
+(env-data
+  { 'kaddex-ns-user: ["kaddex-user"]
+  , 'kaddex-ns-admin: ["kaddex-admin"]
+  , 'kaddex-ops-keyset: ["kaddex-ops"]
+  , 'ns: "kaddex"
+  , 'upgrade: 0
+  , 'initial-lock: false
+  })
+(define-keyset "kaddex-ops-keyset")
+(env-keys ["operate", "kaddex-user", "kaddex-admin"])
+
+(load "ns.pact")
+(load "fungible-util.pact")
+(load "tokens.pact")
+
+;(verify "kaddex.tokens")
+
+(load "swap-callable.pact")
+(commit-tx)
+
+;; test init-issuer guard
+(begin-tx)
+(env-keys [])
+(expect-failure "only admin can init-issuer"
+  "Keyset failure"
+  (kaddex.tokens.init-issuer (keyset-ref-guard 'kaddex-ns-admin)))
+(rollback-tx)
+
+(begin-tx)
+(env-data
+  { 'kaddex-ns-user: ["kaddex-user"]
+  , 'kaddex-ns-admin: ["kaddex-admin"]
+  , 'ns: "kaddex"
+  , 'upgrade: 0
+  , 'initial-lock: false
+  })
+(env-keys ["operate", "kaddex-user", "kaddex-admin"])
+(load "exchange.pact")
+
+(env-dynref fungible-v2 coin)
+(env-dynref kaddex.swap-callable-v1 kaddex.noop-callable)
+;(verify "kaddex.exchange")
+
+(env-data { 'ns: "kaddex", 'upgrade: false })
+(load "test/ABC.pact")
+(load "test/XYZ.pact")
+(commit-tx)
+
+;; test upgradeability
+;; (begin-tx)
+;; (env-data
+;;   { 'kaddex-ns-user: ["kaddex-user"]
+;;   , 'kaddex-ns-admin: ["kaddex-admin"]
+;;   , 'ns: "kaddex"
+;;   , 'upgrade: true })
+;; (env-keys ["operate", "kaddex-user", "kaddex-admin"])
+
+;; (load "ns.pact")
+;; (load "fungible-util.pact")
+;; (load "tokens.pact")
+;; (load "exchange.pact")
+
+(begin-tx)
+(load "test/tokens-test-fungible.pact")
+(load "test/fungible.repl")
+(test-capability (kaddex.tokens.CREDIT TOKEN FUNDER_ACCT))
+(expect "fund success" true
+  (test-fund FUNDER_ACCT FUNDER_GUARD FUNDER_BALANCE))
+(commit-tx)
+
+(fungible-v2-test.suite tokens-test-fungible
+   fungible-test-helper-default "transfer-crosschain-tests")
+
+(begin-tx)
+(env-sigs [])
+
+;; test pair canonicity
+(use kaddex.exchange)
+(expect "canonical pair keys match"
+  (get-pair-key kaddex.abc coin)
+  (get-pair-key coin kaddex.abc))
+(expect "pair does not exist yet" false
+  (pair-exists kaddex.abc coin))
+
+;; test governance on create-pair
+(expect
+  "create pair succeeds without governance"
+  {"key": (get-pair-key coin kaddex.abc), "account": (create-pair-account (get-pair-key coin kaddex.abc) "")}
+  (create-pair coin kaddex.abc "")
+)
+
+(env-keys ["kaddex-admin"])
+
+(expect-failure
+  "Pair already exists"
+  (create-pair coin kaddex.abc ""))
+(create-pair coin kaddex.xyz "")
+(expect "create-pair (2) events" ;; TODO reverse
+  [ { "name": "kaddex.exchange.CREATE_PAIR"
+    , "params": [ coin kaddex.abc "coin:kaddex.abc"
+                  (at 'account (get-pair kaddex.abc coin))]
+    , "module-hash": (at 'hash (describe-module "kaddex.exchange"))
+    }
+    { "name": "kaddex.exchange.CREATE_PAIR"
+    , "params": [ coin kaddex.xyz "coin:kaddex.xyz"
+                  (at 'account (get-pair kaddex.xyz coin))]
+    , "module-hash": (at 'hash (describe-module "kaddex.exchange"))
+    }
+  ]
+  (env-events true))
+
+(env-data
+  { 'bob: ["bob"]
+  , 'alice: ["alice"]
+  })
+
+(test-capability (coin.COINBASE))
+(coin.coinbase "Bob" (read-keyset 'bob) 100000.0)
+(kaddex.abc.create-account "Bob" (read-keyset 'bob))
+(kaddex.abc.fund "Bob" 20000.0)
+(kaddex.xyz.create-account "Bob" (read-keyset 'bob))
+(kaddex.xyz.fund "Bob" 60000.0)
+(coin.coinbase "Alice" (read-keyset 'alice) 10000.0)
+(kaddex.abc.create-account "Alice" (read-keyset 'alice))
+(kaddex.abc.fund "Alice" 20000.0)
+(commit-tx)
+
+;;
+;; fixture
+;;
+
+(begin-tx)
+(use kaddex.exchange)
+
+(env-enable-repl-natives true)
+
+(module fixture G
+  (defcap G () true)
+
+  (defschema fixobservation
+    timestamp:time
+    price:decimal)
+  (deftable fixobservations:{fixobservation})
+
+  (defun setup-abc (amount0:decimal amount1:decimal)
+    (env-sigs
+      [ { 'key: "bob"
+        , 'caps:
+          [ (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) amount0)
+            (kaddex.abc.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) amount1)
+          ]}])
+    (env-chain-data { 'block-time: (time "2022-01-10T00:00:00Z") })
+    (with-applied-env
+      (add-liquidity coin kaddex.abc
+        amount0 amount1 amount0 amount1
+        "Bob" "Bob" (read-keyset "bob")
+        ))
+  )
+
+  (defun setup-xyz (amount0:decimal amount1:decimal)
+    (env-sigs
+      [ { 'key: "bob"
+        , 'caps:
+          [ (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.xyz coin)) 10.0)
+            (kaddex.xyz.TRANSFER "Bob" (at 'account (get-pair kaddex.xyz coin)) 40.0)
+          ]}])
+    (env-chain-data { 'block-time: (time "2022-01-10T00:00:00Z") })
+    (with-applied-env
+      (add-liquidity coin kaddex.xyz
+        amount0 amount1 amount0 amount1
+        "Bob" "Bob" (read-keyset "bob")
+        ))
+  )
+
+  (defun swap-at-time
+    ( token-in:module{fungible-v2}
+      token-out:module{fungible-v2}
+      amount-in:decimal
+      at-time:time
+    )
+    (begin-tx (format "Swap at {}" [at-time]))
+    (env-sigs [
+      { 'key: "bob"
+      , 'caps:
+        [(token-in::TRANSFER "Bob" (at 'account (kaddex.exchange.get-pair token-in token-out)) amount-in)]}])
+    (env-chain-data { 'block-time: at-time })
+    (env-gas 0)
+    (with-applied-env
+      (kaddex.exchange.swap-exact-in amount-in 0.000000000001 [token-in token-out]
+        "Bob" "Bob" (read-keyset 'bob) ))
+    (print (format "Swap gas {}" [(env-gas)]))
+    (commit-tx)
+  )
+
+  (defun add-tracked-path
+    ( path:[module{fungible-v2}]
+    )
+    (begin-tx (format "Add {} to oracle" [path]))
+    (env-sigs [{'key: "kaddex-ops", 'caps: [(kaddex.exchange.OPS)]}])
+    (env-gas 0)
+    (with-applied-env
+      (kaddex.exchange.oracle-add-tracked-path path))
+    (print (format "Added tracked path for {} gas" [(env-gas)]))
+    (commit-tx)
+  )
+
+  (defun query-oracle-price:decimal
+    ( token-path:[module{fungible-v2}]
+    )
+    (let*
+      ( (oracle-price (kaddex.exchange.get-oracle-time-cumulative-price token-path))
+        (observation-key (kaddex.exchange.get-observation-key token-path))
+        (last-seen-price (with-default-read fixobservations observation-key { 'price: 0.0, 'timestamp: (at 'block-time (chain-data)) } { 'price := price, 'timestamp := timestamp } { 'price: price, 'timestamp: timestamp }))
+        (time-delta (diff-time (at 'timestamp oracle-price) (at 'timestamp last-seen-price)))
+        (price-delta (- (at 'price oracle-price) (at 'price last-seen-price)))
+      )
+      (round (/ price-delta time-delta) 8)
+    )
+  )
+
+  (defun update-oracle-price
+    ( token-path:[module{fungible-v2}]
+    )
+    (begin-tx)
+    (let
+      ( (oracle-price (kaddex.exchange.get-oracle-time-cumulative-price token-path))
+        (observation-key (kaddex.exchange.get-observation-key token-path))
+      )
+      (write fixobservations observation-key oracle-price)
+    )
+    (commit-tx)
+  )
+)
+(create-table fixture.fixobservations)
+(commit-tx)
+
+(begin-tx)
+(use kaddex.exchange)
+(fixture.setup-abc 15.0 30.0)
+(fixture.setup-xyz 10.0 40.0)
+
+(commit-tx)
+
+(expect "spot-price" 2.0 (kaddex.exchange.get-spot-price-for coin kaddex.abc))
+(expect "spot-price" 0.5 (kaddex.exchange.get-spot-price-for kaddex.abc coin))
+(expect "spot-price" 4.0 (kaddex.exchange.get-spot-price-for coin kaddex.xyz))
+(expect "spot-price" 0.25 (kaddex.exchange.get-spot-price-for kaddex.xyz coin))
+
+(expect "spot-price-for-path" 2.0 (kaddex.exchange.get-spot-price-for-path [kaddex.abc coin kaddex.xyz]))
+(expect "spot-price-for-path" 0.5 (kaddex.exchange.get-spot-price-for-path [kaddex.xyz coin kaddex.abc]))
+
+(env-gasmodel 'table)
+(env-gaslimit 9999999)
+
+(env-chain-data { 'block-time: (time "2022-01-10T00:00:00Z") })
+
+;; (fixture.add-tracked-path [kaddex.abc coin])
+;; (fixture.add-tracked-path [coin kaddex.abc])
+;; (fixture.add-tracked-path [coin kaddex.xyz])
+;; (fixture.add-tracked-path [kaddex.xyz coin])
+(expect "path not tracked yet" false (kaddex.exchange.is-path-tracked [kaddex.abc coin kaddex.xyz]))
+(expect "path not tracked yet" false (kaddex.exchange.is-path-tracked [kaddex.xyz coin kaddex.abc]))
+
+(fixture.add-tracked-path [kaddex.xyz coin kaddex.abc])
+(fixture.add-tracked-path [kaddex.abc coin kaddex.xyz])
+(fixture.add-tracked-path [kaddex.abc coin])
+(fixture.add-tracked-path [coin kaddex.abc])
+
+(expect "path tracked" true (kaddex.exchange.is-path-tracked [kaddex.abc coin kaddex.xyz]))
+(expect "path tracked" true (kaddex.exchange.is-path-tracked [kaddex.xyz coin kaddex.abc]))
+
+(at 'block-time (chain-data))
+
+(fixture.swap-at-time kaddex.abc coin 0.00000000001 (time "2022-01-10T00:01:00Z"))
+(fixture.swap-at-time coin kaddex.abc 0.00000000004 (time "2022-01-10T00:01:01Z"))
+
+(let ((o1 (kaddex.exchange.get-oracle-time-cumulative-price [coin kaddex.abc]))
+      (oo1 (kaddex.exchange.get-oracle-time-cumulative-price [kaddex.abc coin kaddex.xyz])))
+  (fixture.swap-at-time kaddex.abc coin 10.0 (time "2022-01-15T00:01:00Z"))
+
+  (fixture.swap-at-time kaddex.abc coin 0.00000000001 (time "2022-01-20T00:01:00Z"))
+  (fixture.swap-at-time coin kaddex.abc 0.00000000004 (time "2022-01-20T00:01:01Z"))
+
+  (let ((o2 (kaddex.exchange.get-oracle-time-cumulative-price [coin kaddex.abc]))
+        (oo2 (kaddex.exchange.get-oracle-time-cumulative-price [kaddex.abc coin kaddex.xyz])))
+    (expect "basic oracle tests" true
+            (and
+             (= 2.77644624 (round (/ (- (at 'price o2) (at 'price o1)) (diff-time (at 'timestamp o2) (at 'timestamp o1))) 8))
+             (= 1.56292118 (round (/ (- (at 'price oo2) (at 'price oo1)) (diff-time (at 'timestamp oo2) (at 'timestamp oo1))) 8))))
+))
+
+(begin-tx "Dump all observations")
+(kaddex.exchange.dump-observations (kaddex.exchange.get-pair-key kaddex.abc coin))
+(commit-tx)
+
+(fixture.swap-at-time kaddex.abc coin 0.2 (time "2022-01-20T00:01:00Z"))
+(fixture.swap-at-time kaddex.xyz coin 0.2 (time "2022-01-20T00:01:30Z"))
+(kaddex.exchange.get-oracle-time-cumulative-price [kaddex.xyz coin kaddex.abc])
+(fixture.update-oracle-price [kaddex.xyz coin kaddex.abc])
+(fixture.update-oracle-price [kaddex.abc coin kaddex.xyz])
+
+(map (compose (time) (fixture.swap-at-time kaddex.abc coin 0.2))
+  [ "2022-01-20T00:02:00Z"
+    "2022-01-20T00:03:00Z"
+    "2022-01-20T00:04:00Z"
+    "2022-01-20T00:05:00Z"
+    "2022-01-20T00:06:00Z"
+    "2022-01-20T00:07:00Z"
+    "2022-01-20T00:08:00Z"
+    "2022-01-20T00:09:00Z"
+    "2022-01-20T00:10:00Z" ])
+
+(fixture.query-oracle-price [kaddex.xyz coin kaddex.abc])
+(fixture.query-oracle-price [kaddex.abc coin kaddex.xyz])
+
+(begin-tx "Dump all observations")
+(kaddex.exchange.dump-observations (kaddex.exchange.get-pair-key kaddex.abc coin))
+(commit-tx)
+
+(fixture.update-oracle-price [kaddex.xyz coin kaddex.abc])
+(fixture.update-oracle-price [kaddex.abc coin kaddex.xyz])
+
+(map (compose (add-time (time "2022-01-20T00:10:00Z")) (fixture.swap-at-time kaddex.abc coin 0.2))
+  (enumerate 0 1000 10))
+
+(fixture.query-oracle-price [kaddex.xyz coin kaddex.abc])
+(* (kaddex.exchange.get-spot-price-for kaddex.xyz coin) (kaddex.exchange.get-spot-price-for coin kaddex.abc))
+
+(fixture.query-oracle-price [kaddex.abc coin kaddex.xyz])
+(* (kaddex.exchange.get-spot-price-for kaddex.abc coin) (kaddex.exchange.get-spot-price-for coin kaddex.xyz))
+
+(begin-tx "Dump all observations")
+(kaddex.exchange.dump-observations (kaddex.exchange.get-pair-key kaddex.abc coin))
+(commit-tx)
+(map (compose (time) (fixture.swap-at-time kaddex.abc coin 0.2))
+  [ "2022-01-20T00:11:00Z"
+    "2022-01-20T00:12:00Z" ])
+
+(print "Swap gas after the first swap in a block: ")
+(map (compose (time) (fixture.swap-at-time kaddex.abc coin 0.2))
+  [ "2022-01-20T00:12:00Z" ])
+
+(begin-tx "Dump all observations")
+(kaddex.exchange.dump-observations (kaddex.exchange.get-pair-key kaddex.abc coin))
+(commit-tx)

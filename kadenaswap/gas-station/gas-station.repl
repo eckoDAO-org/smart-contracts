@@ -1,0 +1,200 @@
+(begin-tx)
+(env-data
+ { 'ns-admin-keyset: ["admin"]
+ , 'ns-operate-keyset: ["operate"]
+ , 'ns-genesis-keyset: { "keys": [], "pred": "="} })
+(load "../root/fungible-v2.pact")
+(load "../root/coin.pact")
+(load "../root/ns.pact")
+(load "../root/gas-payer-v1.pact")
+(env-data
+ { 'util-ns-users: ["util-ns-user"]
+ , 'util-ns-admin: ["util-ns-admin"]
+ })
+(env-keys ["util-ns-user", "util-ns-admin"])
+
+(load "../util/ns.pact")
+(load "../util/guards1.pact")
+
+(env-data {
+  'kaddex-ns-user: ["kaddex-user"]
+, 'kaddex-ns-admin: ["kaddex-admin"]
+, 'ns: "kaddex"
+, 'upgrade: false
+})
+
+(env-keys ["operate", "kaddex-admin", "kaddex-user"])
+(load "../ns.pact")
+(load "gas-station.pact")
+(commit-tx)
+
+(begin-tx)
+(env-keys [])
+(use kaddex.gas-station)
+
+(test-capability (coin.COINBASE))
+(coin.coinbase GAS_STATION
+  (util.guards1.guard-any
+    [
+      (create-gas-payer-guard)
+      (keyset-ref-guard 'kaddex-ns-admin)
+    ]) 10.0)
+(commit-tx)
+
+;; SUCCESS CASE
+(begin-tx)
+(use kaddex.gas-station)
+
+(env-chain-data {
+  "gas-price":  0.000000000001
+  })
+(env-data {
+  "tx-type": "exec"
+, "exec-code": ["(kaddex.some-function)"]
+  })
+
+(test-capability (coin.GAS))
+(test-capability (GAS_PAYER "user" 1 1.0))
+(expect
+  "buy gas succeeds"
+  "Write succeeded"
+  (coin.buy-gas "kaddex-free-gas" 1.0))
+(commit-tx)
+
+;;FAILING CASES
+(begin-tx)
+(use kaddex.gas-station)
+
+(env-chain-data {
+  "gas-price":  0.000000000001
+  })
+
+;;mismatching namespace
+(env-data {
+  "tx-type": "exec"
+, "exec-code": ["(free.some-function)"]
+  })
+
+(test-capability (coin.GAS))
+(expect-failure
+  "GAS_PAYER Cap not granted"
+  "only kaddex namespace"
+  (test-capability (GAS_PAYER "user" 1 1.0)))
+
+(expect-failure
+  "buy-gas fails"
+  "None of the guards passed"
+  (coin.buy-gas "kaddex-free-gas" 1.0))
+
+;;mismatching tx-type
+(env-data {
+  "tx-type": "cont"
+, "exec-code": ["(kaddex.some-function)"]
+  })
+
+(expect-failure
+  "GAS_PAYER Cap not granted"
+  "Inside an exec"
+  (test-capability (GAS_PAYER "user" 1 1.0)))
+
+(expect-failure
+  "buy-gas fails"
+  "None of the guards passed"
+  (coin.buy-gas "kaddex-free-gas" 1.0))
+
+;;more than one code
+(env-data {
+  "tx-type": "exec"
+, "exec-code": ["(kaddex.some-function)", "(kaddex.another)"]
+  })
+
+(expect-failure
+  "GAS_PAYER Cap not granted"
+  "Tx of only one pact function"
+  (test-capability (GAS_PAYER "user" 1 1.0)))
+
+(expect-failure
+  "buy-gas fails"
+  "None of the guards passed"
+  (coin.buy-gas "kaddex-free-gas" 1.0))
+
+;;high gas price
+(env-chain-data {
+  "gas-price":  0.0000005
+  })
+(env-data {
+  "tx-type": "exec"
+, "exec-code": ["(kaddex.some-function)"]
+})
+
+(expect-failure
+  "GAS_PAYER Cap not granted"
+  "Gas Price must be smaller than or equal to 0.0000001"
+  (test-capability (GAS_PAYER "user" 1 1.0)))
+
+(expect-failure
+  "buy-gas fails"
+  "None of the guards passed"
+  (coin.buy-gas "kaddex-free-gas" 1.0))
+
+;;high gas limit
+(env-chain-data {
+  "gas-price":  0.000000000001,
+  "gas-limit":  150000
+  })
+(env-data {
+  "tx-type": "exec"
+, "exec-code": ["(kaddex.some-function)"]
+})
+
+(expect-failure
+  "GAS_PAYER Cap not granted"
+  "Gas Limit must be smaller than or equal to 100000"
+  (test-capability (GAS_PAYER "user" 1 1.0)))
+
+(expect-failure
+  "buy-gas fails"
+  "None of the guards passed"
+  (coin.buy-gas "kaddex-free-gas" 1.0))
+
+(commit-tx)
+
+;;BUY GAS FAILING CASE SUCCEEDS WITH ADMIN KEY
+(begin-tx)
+(use kaddex.gas-station)
+
+(env-chain-data {
+  "gas-price":  0.000000000002
+  })
+
+(env-data {
+  "tx-type": "cont"
+, "exec-code": ["(kaddex.some-function)", "(+ 1 2)"]
+  })
+
+(test-capability (coin.GAS))
+(expect-failure
+  "GAS_PAYER Cap not granted"
+  "Inside an exec"
+  (test-capability (GAS_PAYER "user" 1 1.0)))
+
+(expect-failure
+  "buy-gas fails"
+  "None of the guards passed"
+  (coin.buy-gas "kaddex-free-gas" 1.0))
+
+;;insert admin key
+(env-keys ["kaddex-admin"])
+(expect
+  "buy-gas succeeds without GAS_PAYER"
+  "Write succeeded"
+  (coin.buy-gas "kaddex-free-gas" 1.0))
+
+;;rotate succeeds
+(env-sigs [{
+  "key": "kaddex-admin",
+  "caps": [(coin.ROTATE "kaddex-free-gas")]
+  }])
+(coin.rotate "kaddex-free-gas" (keyset-ref-guard 'kaddex-ns-admin))
+
+(commit-tx)

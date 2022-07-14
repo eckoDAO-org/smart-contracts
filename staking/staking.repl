@@ -1,0 +1,618 @@
+(load "../wrapper/init.repl")
+
+(begin-tx)
+(env-data { 'ns: "kaddex", 'upgrade: false, 'admin-keyset: ['admin]})
+(env-data
+  { 'kaddex-ns-user: ["kaddex-user"]
+   , 'kaddex-ns-admin: ["kaddex-admin"]
+   , 'kdx-admin-keyset: ["kaddex-admin"]
+   , 'kaddex-ops-keyset: ["kaddex-ops"]
+   , 'bob: ["bob"]
+   , 'alice: ["alice"]
+   , 'ns: "kaddex"
+   , 'upgrade: false
+   , 'kdx-supply: 1000000.0
+   , 'token-a-supply: 0.0
+   , 'token-b-supply: 0.0})
+(env-keys ["operate", "kaddex-user", "kaddex-admin", "kaddex-ops" "bob", "alice"])
+(define-keyset "kaddex-ops-keyset")
+(load "../kadenaswap/test/ABC.pact")
+(load "../kadenaswap/test/XYZ.pact")
+(load "staking.pact")
+
+(test-capability (kaddex.kdx.GOVERNANCE))
+(kaddex.kdx.assign-privilege kaddex.kdx.BURN_PRIVILEGE (read-keyset 'kdx-admin-keyset))
+(kaddex.kdx.assign-privilege kaddex.kdx.MINT_PRIVILEGE (read-keyset 'kdx-admin-keyset))
+
+(env-dynref fungible-v2 coin)
+(env-dynref kaddex.swap-callable-v1 kaddex.noop-callable)
+
+(commit-tx)
+
+(begin-tx "Register sKDX with Alchemist")
+
+(kaddex.alchemist.register-prefix kaddex.skdx 'hey)
+(kaddex.alchemist.grant-privilege kaddex.skdx 'wrap (kaddex.staking.wrap-guard))
+(kaddex.alchemist.grant-privilege kaddex.skdx 'unwrap (kaddex.staking.wrap-guard))
+
+(commit-tx)
+
+(begin-tx "Create accounts and fund")
+(env-sigs [])
+
+;; test pair canonicity
+(use kaddex.exchange)
+(expect "canonical pair keys match"
+  (get-pair-key kaddex.kdx coin)
+  (get-pair-key coin kaddex.kdx))
+(expect "pair does not exist yet" false
+  (pair-exists kaddex.kdx coin))
+
+;; test governance on create-pair
+(expect
+  "create pair succeeds without governance"
+  {"key": (get-pair-key coin kaddex.kdx), "account": (create-pair-account (get-pair-key coin kaddex.kdx) "")}
+  (create-pair coin kaddex.kdx ""))
+
+(create-pair kaddex.abc coin "")
+(create-pair kaddex.xyz coin "")
+
+
+(env-data
+  { 'bob: ["bob"]
+   , 'alice: ["alice"]
+   , 'carl: ["carl"]
+   , 'dan: ["dan"]
+   , 'eli: ["eli"]
+   , 'fae: ["fae"]
+   , 'kaddex-ns-admin: [ "kaddex-admin" ]})
+
+(env-keys [ "kaddex-admin" ])
+(test-capability (coin.COINBASE))
+(coin.coinbase "Bob" (read-keyset 'bob) 1000.0)
+(coin.coinbase "Alice" (read-keyset 'alice) 10000.0)
+(coin.coinbase "Carl" (read-keyset 'carl) 1000.0)
+(coin.coinbase "dan" (read-keyset 'dan) 1000.0)
+(coin.coinbase "eli" (read-keyset 'eli) 1000.0)
+(coin.coinbase "fae" (read-keyset 'fae) 1000.0)
+(kaddex.abc.create-account "Bob" (read-keyset 'bob))
+(kaddex.abc.fund "Bob" 2000.0)
+(kaddex.xyz.create-account "Bob" (read-keyset 'bob))
+(kaddex.xyz.fund "Bob" 600.0)
+ (env-sigs
+   [ { 'key: 'kaddex-admin
+      , 'caps:
+       [ ]}])
+ (env-chain-data { 'chain-id: "0" })
+ (with-applied-env [
+   (kaddex.kdx.mint 'network-rewards 'admin (read-keyset 'kaddex-ns-admin) 10000.0)
+   (kaddex.kdx.mint 'network-rewards 'Bob (read-keyset 'bob) 1000.0)
+   (kaddex.kdx.mint 'network-rewards 'Alice (read-keyset 'alice) 1000.0)
+   (kaddex.kdx.mint 'network-rewards 'Carl (read-keyset 'carl) 1000.0)
+   (kaddex.kdx.mint 'network-rewards 'dan (read-keyset 'dan) 1000.0)
+   (kaddex.kdx.mint 'network-rewards 'eli (read-keyset 'eli) 1000.0)
+   (kaddex.kdx.mint 'network-rewards 'fae (read-keyset 'fae) 1000.0)
+ ])
+(commit-tx)
+
+(begin-tx "Set up test fixtures")
+(use kaddex.exchange)
+
+(env-enable-repl-natives true)
+
+(module fixture G
+  (defcap G () true)
+  (use kaddex.exchange)
+  (use kaddex.wrapper)
+
+  (defschema staker
+    account:string
+    in:bool
+    amount:decimal
+    pending-add:decimal
+    added-epochs:[integer]
+    added-amounts:[decimal]
+    accrued:decimal
+    accrual-record:[decimal]
+    last-claimed:integer)
+
+  (defschema state-schema
+    staked:decimal
+    epoch:integer)
+
+  (defschema trace-entry
+    epoch:integer
+    account:string
+    operation:string
+    success:bool
+    message:string)
+
+  (deftable stakers:{staker})
+  (deftable state:{state-schema})
+  (deftable trace:{trace-entry})
+
+  (defconst STATE_KEY:string "state")
+  (defconst EPOCH_LENGTH:decimal (days 1.0))
+  (defconst START_TIME:time (time "2020-01-01T00:00:00Z"))
+
+  (defun min (a b) (if (< a b) a b))
+
+  (defun folded-reward-calculate (a b:integer)
+    "Helper to calculate reward penalties"
+    (bind a
+      { 'staked := prev-staked, 'entry := entry, 'start := prev-start }
+      (let*
+        ( (added-amount (at b (at 'added-amounts entry)))
+          (epoch (at b (at 'added-epochs entry)))
+          (epoch-time (get-time-for-epoch epoch))
+          (ratio (/ added-amount (+ prev-staked added-amount)))
+          (penalty-passed (min kaddex.staking.MATURATION_PERIOD (diff-time epoch-time prev-start)))
+          (base-date (add-time epoch-time (- 0.0 penalty-passed)))
+          (additional-penalty (* penalty-passed ratio))
+          (new-start (add-time base-date additional-penalty))
+        )
+        { 'staked: (+ prev-staked added-amount)
+        , 'entry: entry
+        , 'start: new-start })))
+
+  (defun calculate-stake-penalty:decimal
+    (epoch:integer account:string unstake-amount:decimal)
+    "Naively calculate stake penalty for a given account at a given epoch."
+    (with-read stakers account
+      { 'in := in, 'amount := amount, 'added-epochs := added-epochs }
+      (if (not in) 0.0
+        (let*
+          ( (current-time (get-time-for-epoch epoch))
+            (last-added-time (get-time-for-epoch (at (- (length added-epochs) 1) added-epochs)))
+            (time-passed (diff-time current-time last-added-time))
+          )
+          (if (>= time-passed kaddex.staking.PENALTY_PERIOD) 0.0
+            (* kaddex.staking.PENALTY_FRACTION unstake-amount))))))
+
+  (defun calculate-effective-start:time (account:string)
+    (let ((entry (read stakers account)))
+      (at 'start (fold (folded-reward-calculate)
+        { 'staked: 0.0
+        , 'entry: entry
+        , 'start: (add-time START_TIME (- 0.0 kaddex.staking.MATURATION_PERIOD)) }
+        (drop -1 (enumerate 0 (length (at 'added-epochs entry))))))))
+
+  (defun calculate-reward-penalty:decimal
+    (epoch:integer account:string)
+    "Naively calculate reward penalty for a given account at a given epoch."
+    (let ((entry (read stakers account)))
+      (if (not (at 'in entry)) 0.0
+        (kaddex.staking.calculate-penalty
+          (diff-time
+            (get-time-for-epoch epoch)
+            (calculate-effective-start account))
+          (at 'accrued entry)))))
+
+  (defun record-trace (epoch:integer account:string operation:string success:bool message:string)
+    "Record an execution trace."
+    (write trace (hash [epoch account operation success message])
+      { 'epoch: epoch
+      , 'account: account
+      , 'operation: operation
+      , 'success: success
+      , 'message: message}))
+  (defun delta-stake-total (delta:decimal)
+    "Record a change in the total staked amount."
+    (with-read state STATE_KEY { 'staked := staked }
+      (update state STATE_KEY { 'staked: (+ staked delta )})))
+  (defun get-time-for-epoch:time (epoch:integer) (add-time START_TIME (* epoch EPOCH_LENGTH)))
+  (defun read-current-epoch:integer () (at 'epoch (read state STATE_KEY)))
+  (defun advance-epoch (operations:[object])
+    (let ((current-epoch (read-current-epoch)))
+      (swap-activity 10.0 1)
+      (realize-fees)
+
+      (begin-tx)
+      (env-chain-data { 'block-time: (get-time-for-epoch current-epoch) })
+      (distribute-sweep current-epoch)
+      (commit-tx)
+
+      (begin-tx)
+      (env-chain-data { 'block-time: (get-time-for-epoch current-epoch) })
+      (with-applied-env (map (do-op current-epoch) operations))
+      (include-waiting current-epoch)
+      (update state STATE_KEY { 'epoch: (+ 1 current-epoch) })
+      (commit-tx)))
+
+  (defun do-op (epoch:integer operation:object)
+    "Do one simulation operation."
+    (bind operation
+      { 'op := op, 'params := params }
+      (cond
+        ((= op 'add) (add-stake epoch (at 'account params) (at 'amount params)))
+        ((= op 'onboard) (onboard epoch (at 'account params) (at 'amount params) (at 'locks params)))
+        ((= op 'remove) (remove-stake epoch (at 'account params) (at 'amount params)))
+        ((= op 'claim) (claim-reward epoch (at 'account params)))
+        ((= op 'claim-all) (map (compose (at 'account) (claim-reward epoch)) (select stakers (where 'in (= true)))))
+        ((= op 'remove-all) (map (lambda (staker) (remove-stake epoch (at 'account staker) (at 'amount staker))) (select stakers (where 'in (= true)))))
+        {})))
+
+  (defun onboard (epoch:integer account:string amount:decimal locks:[object{kaddex.staking.stake-lock}])
+    (env-sigs [ { 'key: 'kaddex-ops, 'caps: [(kaddex.staking.OPS)] } { 'key: 'kaddex-admin, 'caps: [(kaddex.kdx.WRAP kaddex.skdx 'admin account amount)] } ])
+    (with-applied-env (kaddex.staking.onboard-with-lock 'admin account (at 'guard (kaddex.kdx.details account)) amount locks))
+    (with-default-read stakers account
+      { 'amount: 0.0, 'in: false, 'pending-add: 0.0, 'added-epochs: [], 'added-amounts: [], 'accrued: 0.0, 'accrual-record: [], 'last-claimed: -100000 }
+      { 'amount := prev-amount, 'in := in, 'pending-add := prev-pending-add, 'added-epochs := prev-epochs, 'added-amounts := prev-amounts, 'accrued := accrued, 'accrual-record := accrual-record, 'last-claimed := last-claimed }
+      (write stakers account
+        { 'account: account
+        , 'in: in
+        , 'amount: prev-amount
+        , 'added-epochs: prev-epochs
+        , 'added-amounts: prev-amounts
+        , 'pending-add: (+ prev-pending-add amount)
+        , 'accrued: accrued
+        , 'accrual-record: accrual-record
+        , 'last-claimed: (if (= 0.0 prev-amount) -100000 last-claimed) })
+      (record-trace epoch account 'onboard true
+        (format "queued onboarding {} with {} KDX staked, locked until {}"
+          [account amount locks]))))
+
+  (defun add-stake (epoch:integer account:string amount:decimal)
+    (env-sigs
+      [ { 'key: account
+        , 'caps: [
+        (kaddex.kdx.WRAP kaddex.skdx account account amount)
+        (kaddex.staking.STAKE account amount)]}])
+    (with-applied-env (kaddex.staking.stake account amount))
+    (with-default-read stakers account
+      { 'amount: 0.0, 'in: false, 'pending-add: 0.0, 'added-epochs: [], 'added-amounts: [], 'accrued: 0.0, 'accrual-record: [], 'last-claimed: -100000 }
+      { 'amount := prev-amount, 'in := in, 'pending-add := prev-pending-add, 'added-epochs := prev-epochs, 'added-amounts := prev-amounts, 'accrued := accrued, 'accrual-record := accrual-record, 'last-claimed := last-claimed }
+      (write stakers account
+        { 'account: account
+        , 'in: in
+        , 'amount: prev-amount
+        , 'added-epochs: prev-epochs
+        , 'added-amounts: prev-amounts
+        , 'pending-add: (+ prev-pending-add amount)
+        , 'accrued: accrued
+        , 'accrual-record: accrual-record
+        , 'last-claimed: (if (= 0.0 prev-amount) -100000 last-claimed) })
+      (record-trace epoch account 'add-stake true
+        (format "queued adding {} to {}'s stake ({} + {} + {} = {})"
+          [amount account prev-amount amount prev-pending-add (+ (+ amount prev-pending-add) prev-amount)]))))
+
+  (defun claim-reward (epoch:integer account:string)
+    (env-sigs
+      [ { 'key: account
+        , 'caps: [
+          (kaddex.staking.ROLLUP account)]}])
+    (with-read stakers account
+      { 'in := in, 'amount := stake-amount, 'accrued := accrued, 'last-claimed := last-claimed }
+      (expect "rollup failed, error caught" true (with-applied-env
+        (>= 0.00000001 (abs (- (floor accrued (kaddex.kdx.precision)) (kaddex.staking.rollup account))))))
+      (env-sigs
+        [ { 'key: account
+          , 'caps: [
+            (kaddex.staking.CLAIM account)]}])
+      (let*
+        ( (accrued-floored (floor accrued (kaddex.kdx.precision)))
+          (previous-balance (kaddex.kdx.get-balance account))
+          (expected-reward-return (- accrued-floored (calculate-reward-penalty epoch account)))
+          (expected-balance (+ previous-balance expected-reward-return))
+          (last-claim-time (get-time-for-epoch last-claimed))
+          (now (get-time-for-epoch epoch))
+          (expect-success (and in (>= (diff-time now last-claim-time) kaddex.staking.CLAIM_EVERY)))
+          (claim-result (expect "claim failed, error caught" true (with-applied-env (kaddex.staking.claim account))))
+          (claim-success (!= (take 4 claim-result) "FAIL"))
+          (events (env-events true))
+        )
+        (cond
+          ((!= claim-success expect-success)
+           (record-trace epoch account 'claim-reward false (format "Expected claim success: {}, actual claim success: {}" [ expect-success claim-success ])))
+          ((not claim-success)
+           (record-trace epoch account 'claim-reward true (format "Expected claim success: {}, actual claim success: {}" [ expect-success claim-success ])))
+          (let ((result-balance (kaddex.kdx.get-balance account)))
+            (if (<= (abs (- result-balance expected-balance)) 0.000000000001)
+              (record-trace epoch account 'claim-reward true
+                (format "claimed {}'s rewards, {} out, checks out"
+                  [account expected-reward-return]))
+              (record-trace epoch account 'claim-reward false
+                (format "Expected {} out when claiming {}'s rewards, got {} instead"
+                  [expected-reward-return account (- result-balance previous-balance)])))
+            (update stakers account { 'accrued: 0.0, 'last-claimed: epoch }))))))
+
+  (defun remove-stake (epoch:integer account:string unstake-amount:decimal)
+    (env-sigs
+      [ { 'key: account
+        , 'caps: [
+          (kaddex.staking.UNSTAKE account)
+          (kaddex.skdx.DEBIT account)]}])
+    (with-read stakers account
+      { 'in := in, 'amount := stake-amount, 'accrued := accrued, 'last-claimed := last-claimed
+      , 'added-epochs := prev-added-epochs, 'added-amounts := prev-added-amounts}
+      (let*
+        ( (previous-balance (kaddex.kdx.get-balance account))
+          (unlocked-stake (kaddex.staking.read-unlocked-stake account))
+          (unstaking-all (= unstake-amount stake-amount))
+          (unstake-penalty (calculate-stake-penalty epoch account unstake-amount))
+          (expected-stake-return (- unstake-amount unstake-penalty))
+          (expected-balance (+ previous-balance expected-stake-return))
+          (now (get-time-for-epoch epoch))
+          (expect-success (and in (>= unlocked-stake unstake-amount)))
+          (unstake-result (expect "unstake failed, error caught" true (with-applied-env (kaddex.staking.unstake account unstake-amount))))
+          (unstake-success (!= (take 4 unstake-result) "FAIL"))
+        )
+        (cond
+          ((!= unstake-success expect-success)
+           (record-trace epoch account 'remove-stake false (format "Expected unstake success: {} (in: {}, requested: {}, unlocked: {}), actual unstake success: {}" [ expect-success in unstake-amount unlocked-stake unstake-success ])))
+          ((not unstake-success)
+           (record-trace epoch account 'remove-stake true (format "Expected unstake success: {} (in: {}, requested: {}, unlocked: {}), actual unstake success: {}" [ expect-success in unstake-amount unlocked-stake unstake-success ])))
+          (let ((result-balance (kaddex.kdx.get-balance account)))
+            (if (= result-balance expected-balance)
+              (record-trace epoch account 'remove-stake true
+                (format "removed {}'s stake ({} stake - {} penalty = {} out | before: {} staked {} unlocked, after: {} staked), checks out"
+                  [account unstake-amount unstake-penalty expected-stake-return stake-amount unlocked-stake (- stake-amount unstake-amount)]))
+              (record-trace epoch account 'remove-stake false
+                (format "Expected {} KDX out when unstaking {} from {}, got {} instead"
+                  [expected-stake-return unstake-amount account (- result-balance previous-balance)])))
+            (delta-stake-total (- 0.0 unstake-amount))
+            (update stakers account
+              { 'amount: (- stake-amount unstake-amount)
+              , 'accrued: accrued
+              , 'in: (not unstaking-all)
+              , 'added-epochs: (if unstaking-all [] (+ prev-added-epochs [epoch]))
+              , 'added-amounts: (if unstaking-all [] (+ prev-added-amounts [(- stake-amount unstake-amount)]))}))))))
+
+  (defun swap-cycle
+    (tokenA:module{fungible-v2}
+     tokenB:module{fungible-v2}
+     in:decimal
+     key:string
+     account:string)
+    "Swap one pair back and forth. Generates fees."
+    (begin-tx)
+    (env-sigs [
+      { 'key: key
+      , 'caps: [
+        (tokenA::TRANSFER account (at 'account (get-pair tokenA tokenB)) in)
+        (tokenB::TRANSFER account (at 'account (get-pair tokenA tokenB)) 1000000.0)]}])
+    (with-applied-env
+      [(kaddex.exchange.swap-exact-in in 0.0 [tokenA tokenB]
+         account account (at 'guard (coin.details account)))
+       (kaddex.exchange.swap-exact-out in 1000000.0 [tokenB tokenA]
+         account account (at 'guard (coin.details account)))])
+    (commit-tx))
+
+  (defun swap-activity (amount:decimal times:integer)
+    "Execute _times_ swap cycles with _amount_ tokens each."
+    (map
+      (lambda (discard)
+        (swap-cycle coin kaddex.kdx amount 'bob 'Bob)
+        (swap-cycle coin kaddex.xyz amount 'bob 'Bob)
+        (swap-cycle coin kaddex.abc amount 'bob 'Bob))
+      (drop 1 (enumerate 0 times))))
+
+  (defun realize-fees ()
+    "Realize pair fees by removing a very small amount of liquidity."
+    (begin-tx)
+    (env-sigs [ { 'key: 'kaddex-admin, 'caps: [] } { 'key: 'kaddex-ops, 'caps: [(kaddex.exchange.OPS) (kaddex.staking.OPS)] } ])
+    (let ((mint-fees (lambda (pair)
+      (env-sigs [ { 'key: 'kaddex-admin, 'caps: [] } { 'key: 'kaddex-ops, 'caps: [(kaddex.exchange.OPS) (kaddex.staking.OPS)] } ]) (with-applied-env (kaddex.exchange.mint-fee-manual pair)))))
+      (with-applied-env
+        (map (kaddex.exchange.mint-fee-manual) (keys kaddex.staking.pair-table))))
+    (commit-tx))
+
+  (defun mark-included (epoch:integer account:string)
+    (with-read stakers account
+      { 'pending-add := pending-add
+      , 'added-epochs := added-epochs
+      , 'added-amounts := added-amounts
+      , 'amount := prev-amount }
+      (update stakers account
+        { 'pending-add: 0.0
+        , 'in: true
+        , 'added-epochs: (+ added-epochs [epoch])
+        , 'added-amounts: (+ added-amounts [pending-add])
+        , 'amount: (+ prev-amount pending-add) })
+      (delta-stake-total pending-add)))
+
+  (defun include-waiting (epoch:integer)
+    (env-sigs [ { 'key: 'kaddex-ops, 'caps: [(kaddex.staking.OPS)] } ])
+    (env-chain-data { 'block-time: (get-time-for-epoch epoch) })
+    (let
+      ( (accounts-to-add (kaddex.staking.read-waiting))
+      )
+      (with-applied-env (kaddex.staking.include-batch accounts-to-add))
+      (map (mark-included epoch) accounts-to-add)
+    )
+  )
+
+  (defun distribute-one (epoch:integer swept:decimal total:decimal account:string)
+    "Naively calculate staking income for a given account and a given sweep cycle."
+    (with-read stakers account
+      { 'accrued := accrued, 'accrual-record := accrual-record, 'amount := stake-amount }
+      (let ((share (* swept (/ stake-amount total))))
+        (update stakers account { 'accrued: (+ accrued share), 'accrual-record: (+ accrual-record [share]) }))))
+
+  (defun distribute-sweep (epoch:integer)
+    "Execute a sweep cycle and naively distribute rewards to all stakers."
+    (env-sigs [ { 'key: 'kaddex-ops, 'caps: [(kaddex.staking.OPS)] }])
+    (let*
+      ( (swept (with-applied-env (kaddex.staking.sweep-all)))
+        (total (at 'staked (read state STATE_KEY)))
+      )
+      ;(record-trace epoch "" "distribute" true (format "{}" [ (env-events true) ]))
+      (map (compose (at 'account) (distribute-one epoch swept total) )
+        (select stakers (where 'in (= true))))))
+
+  (defun time-after-start:time (from:string seconds:decimal)
+    (add-time (at 'last-stake (kaddex.staking.get-stake-record from)) seconds))
+
+  (defun dump-all-trace ()
+    (sort ['epoch] (map (read trace) (keys trace))))
+
+  (defun dump-failed-trace ()
+    (sort ['epoch] (select trace (where 'success (not)))))
+)
+
+(create-table stakers)
+(create-table state)
+(create-table trace)
+(insert state STATE_KEY { 'epoch: 0, 'staked: 0.0 })
+
+(commit-tx)
+
+(begin-tx "Add base liquidity/register pairs KDA:KDX, ABC:KDX")
+(use kaddex.exchange)
+(use kaddex.wrapper)
+
+(env-sigs
+  [ { 'key: "bob"
+     , 'caps:
+      [ (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.kdx coin)) 10.0)
+      (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 10.0)
+      (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.xyz coin)) 10.0)
+      (kaddex.kdx.TRANSFER "Bob" (at 'account (get-pair coin kaddex.kdx)) 2.0)
+      (kaddex.abc.TRANSFER "Bob" (at 'account (get-pair coin kaddex.abc)) 2.0)
+      (kaddex.xyz.TRANSFER "Bob" (at 'account (get-pair coin kaddex.xyz)) 2.0)
+      ]}
+    , {'key: 'kaddex-ops, 'caps: [(kaddex.wrapper.OPS)]}])
+
+(test-capability (kaddex.wrapper.OPS))
+(with-applied-env [
+  (kaddex.exchange.oracle-add-tracked-path [coin kaddex.kdx])
+  (kaddex.exchange.oracle-add-tracked-path [kaddex.abc coin kaddex.kdx])
+  (kaddex.exchange.oracle-add-tracked-path [kaddex.xyz coin kaddex.kdx])
+  (kaddex.wrapper.register-pair coin kaddex.abc [coin kaddex.kdx] [kaddex.abc coin kaddex.kdx] 0.5 1.0 0.5 1.0 'Bob 'test1)
+  (kaddex.wrapper.register-pair coin kaddex.xyz [coin kaddex.kdx] [kaddex.xyz coin kaddex.kdx] 0.5 1.0 0.5 1.0 'Bob 'test1)
+  (kaddex.wrapper.register-pair coin kaddex.kdx [coin kaddex.kdx] [kaddex.kdx] 0.5 1.0 0.5 1.0 'Bob 'test1)])
+
+
+(commit-tx)
+
+(begin-tx "Create initial liquidity account using Bob's funds")
+(use kaddex.exchange)
+(use kaddex.wrapper)
+
+(env-sigs
+  [ { 'key: "bob"
+     , 'caps:
+      [ (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.kdx coin)) 0.5)
+        (kaddex.kdx.TRANSFER "Bob" (at 'account (get-pair kaddex.kdx coin)) 1.0)]}
+    , {'key: 'kaddex-ops, 'caps: [(kaddex.wrapper.OPS)]}])
+
+(test-capability (kaddex.wrapper.OPS))
+(with-applied-env (kaddex.wrapper.set-fee-multiplier-for-pair coin kaddex.kdx 5.0))
+
+(env-events true)
+(commit-tx)
+(begin-tx "Add liquidity with Bob's fund")
+
+(use kaddex.exchange)
+(use kaddex.wrapper)
+
+(env-sigs
+  [ { 'key: "bob"
+     , 'caps:
+      [ (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.kdx coin)) 20.0)
+        (kaddex.kdx.TRANSFER "Bob" (at 'account (get-pair kaddex.kdx coin)) 40.0)]}])
+
+(with-applied-env
+  (kaddex.wrapper.add-liquidity coin kaddex.kdx
+    20.0 40.0 20.0 40.0
+    "Bob" "Bob" (read-keyset "bob")))
+(commit-tx)
+
+(fixture.swap-activity 50.0 1)
+(fixture.realize-fees)
+
+(begin-tx "Register token-a:token-b")
+
+(env-sigs [ { 'key: 'kaddex-admin, 'caps: [] } { 'key: 'kaddex-ops, 'caps: [] } { 'key: 'kaddex-user, 'caps: [] } ])
+(namespace 'kaddex)
+(use kaddex.staking)
+
+(env-keys ['kaddex-admin 'kaddex-ops])
+(register-pair coin kdx "hint")
+(register-pair coin xyz "hint")
+(register-pair coin abc "hint")
+
+(get-pair-record coin kdx)
+
+(commit-tx)
+
+; epoch 1
+(fixture.advance-epoch [
+  { 'op: 'add, 'params: { 'account: 'dan, 'amount: 5.0 } }
+  { 'op: 'add, 'params: { 'account: 'eli, 'amount: 10.0 } }
+  { 'op: 'add, 'params: { 'account: 'fae, 'amount: 20.0 } }
+])
+
+(begin-tx "Enforce onboard-with-lock constraints")
+(env-keys ["kaddex-ops" "kaddex-admin" "dan"])
+(env-sigs [
+  { 'key: "kaddex-admin", 'caps: [(kaddex.kdx.WRAP kaddex.skdx 'admin 'dan 5.0)] }
+  { 'key: "kaddex-ops", 'caps: [(kaddex.staking.OPS)] }
+  ])
+(expect-failure "one lock is negative" (kaddex.staking.onboard-with-lock "admin" "dan" (at 'guard (kaddex.kdx.details "dan")) 5.0 [
+  { 'amount: -2.5, 'until: (fixture.get-time-for-epoch 5) }
+  { 'amount: 2.5, 'until: (fixture.get-time-for-epoch 10) }
+]))
+(expect-failure "locks exceed provided amount" (kaddex.staking.onboard-with-lock "admin" "dan" (at 'guard (kaddex.kdx.details "dan")) 5.0 [
+  { 'amount: 3.5, 'until: (fixture.get-time-for-epoch 5) }
+  { 'amount: 2.5, 'until: (fixture.get-time-for-epoch 10) }
+]))
+(expect "successful onboard" "Write succeeded" (kaddex.staking.onboard-with-lock "admin" "dan" (at 'guard (kaddex.kdx.details "dan")) 5.0 [
+  { 'amount: 2.5, 'until: (fixture.get-time-for-epoch 5) }
+  { 'amount: 2.5, 'until: (fixture.get-time-for-epoch 10) }
+]))
+(rollback-tx)
+
+; epoch 2
+(fixture.advance-epoch [
+  { 'op: 'onboard, 'params: { 'account: 'bob, 'amount: 5.0, 'locks: [
+    { 'amount: 2.5, 'until: (fixture.get-time-for-epoch 5) }
+    { 'amount: 2.5, 'until: (fixture.get-time-for-epoch 10) }
+  ] } }
+  { 'op: 'onboard, 'params: { 'account: 'dan, 'amount: 5.0, 'locks: [
+    { 'amount: 5.0, 'until: (fixture.get-time-for-epoch 6) }
+  ] } }
+])
+
+; epoch 3
+(fixture.advance-epoch [
+  { 'op: 'remove, 'params: { 'account: 'eli, 'amount: 10.0 } }
+  { 'op: 'add, 'params: { 'account: 'dan, 'amount: 10.0 } }
+  { 'op: 'remove, 'params: { 'account: 'bob, 'amount: 4.0 } }
+])
+
+(fixture.advance-epoch []) ; 4
+
+(env-chain-data { 'block-time: (fixture.get-time-for-epoch 5) })
+(kaddex.staking.inspect-staker "dan")
+(fixture.advance-epoch [
+  { 'op: 'remove, 'params: { 'account: 'dan, 'amount: 19.9 } }]) ; 5
+(fixture.advance-epoch []) ; 6
+(fixture.advance-epoch [ { 'op: 'claim, 'params: { 'account: 'dan } } ]) ; 7
+
+; epoch 8
+(fixture.advance-epoch [
+  { 'op: 'remove, 'params: { 'account: 'dan, 'amount: 19.9 } }
+  { 'op: 'remove, 'params: { 'account: 'bob, 'amount: 2.5 } } ])
+(fixture.advance-epoch []) ; 9
+; epoch 10
+(fixture.advance-epoch [
+  { 'op: 'add, 'params: { 'account: 'eli, 'amount: 10.0 } }])
+; epoch 11
+(fixture.advance-epoch [
+  { 'op: 'remove, 'params: { 'account: 'fae, 'amount: 20.0 } }
+  { 'op: 'remove, 'params: { 'account: 'bob, 'amount: 2.5 } } ])
+
+(fixture.advance-epoch []) ; 12
+(fixture.advance-epoch []) ; 13
+(fixture.advance-epoch []) ; 14
+
+(env-chain-data { 'block-time: (fixture.get-time-for-epoch 15) })
+(kaddex.staking.inspect-staker "dan")
+
+(fixture.dump-all-trace)
+
+(expect "No failed traces" [] (fixture.dump-failed-trace))
+;; NOTE: Ignore any FAILUREs if the above expect passes; we use expect inside the
+;; fixture module to catch some errors that happen in an impure context. Ugly
+;; hack but try doesn't work, so meh.

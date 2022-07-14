@@ -1,0 +1,125 @@
+(begin-tx "Loading root namespace and coin")
+(env-data
+ { 'ns-admin-keyset: ["admin"]
+ , 'ns-operate-keyset: ["operate"]
+ , 'ns-genesis-keyset: { "keys": [], "pred": "="} })
+(load "../kadenaswap/root/fungible-v2.pact")
+(load "../kadenaswap/root/coin.pact")
+(load "../kadenaswap/root/ns.pact")
+
+(env-data
+  { 'kaddex-ns-user: ["kaddex-user"]
+  , 'kaddex-ns-admin: ["kaddex-admin"]
+  , 'kaddex-ops-keyset: ["kaddex-ops"]
+  , 'kaddex-admin: ["kaddex-admin"]
+  , 'ns: "kaddex"
+  , 'upgrade: 0
+  })
+
+(define-keyset "kaddex-ops-keyset")
+(define-keyset "kaddex-admin")
+(env-keys ["operate", "kaddex-user", "kaddex-admin", "kaddex-ops"])
+
+(load "../kadenaswap/ns.pact")
+(load "../kadenaswap/fungible-util.pact")
+(load "../kadenaswap/tokens.pact")
+
+(load "../kadenaswap/swap-callable.pact")
+(commit-tx)
+
+;; test init-issuer guard
+(begin-tx "Test init-issue guard")
+(env-keys [])
+(expect-failure "only admin can init-issuer"
+  "Keyset failure"
+  (kaddex.tokens.init-issuer (keyset-ref-guard 'kaddex-ns-admin)))
+(rollback-tx)
+
+(begin-tx "create swap.exchange, wrapper and test coins")
+
+(env-enable-repl-natives true) ;; note: enables usage of (print) inside wrapper.pact
+
+(env-data
+  { 'kaddex-ns-user: ["kaddex-user"]
+   , 'kaddex-ns-admin: ["kaddex-admin"]
+   , 'base-token-admin-keyset: ["kaddex-admin"]
+   , 'kdx-admin-keyset: ["kaddex-admin"]
+   , 'token-a-admin-keyset: ["kaddex-admin"]
+   , 'token-b-admin-keyset: ["kaddex-admin"]
+   , 'bob: ["bob"]
+   , 'alice: ["alice"]
+   , 'fee-to-addr: ["fee-to-addr"]
+   , 'ns: "kaddex"
+   , 'upgrade: 0
+   , 'initial-lock: false
+   , 'base-token-supply: 1000000.0
+   , 'token-a-supply: 0.0
+   , 'token-b-supply: 0.0})
+(define-keyset 'bob)
+(define-keyset 'alice)
+(define-keyset 'fee-to-addr)
+
+(define-keyset 'kdx-admin-keyset)
+
+
+(env-keys ["operate", "kaddex-user", "kaddex-admin", "bob", "alice"])
+(load "../kadenaswap/exchange.pact")
+
+(load "tokens/supply-control-v1.pact")
+(load "tokens/special-accounts-v2.pact")
+(load "tokens/kdx.pact")
+(load "tokens/alchemist.pact")
+(load "tokens/skdx.pact")
+(load "tokens/vkdx.pact")
+
+(env-gasmodel 'table)
+(env-gaslimit 200000000)
+(load "wrapper.pact")
+(env-gas)
+
+(test-capability (kaddex.kdx.GOVERNANCE))
+(kaddex.kdx.update-mint-cap 10.0)
+(kaddex.kdx.assign-privilege kaddex.kdx.MINT_PRIVILEGE (read-keyset 'kaddex-ns-admin))
+
+;; Test mint cap
+
+(env-chain-data { 'chain-id: "0" })
+
+(expect "Mint success" 1.0
+  (kaddex.kdx.mint 'network-rewards 'bob (read-keyset 'bob) 1.0))
+
+(expect-failure "Cannot exceed mint cap"
+  (kaddex.kdx.mint 'network-rewards 'bob (read-keyset 'bob) 9.0))
+
+;; Update to proper values
+(kaddex.kdx.update-mint-cap 100000000.0)
+;; FIXME: uncommenting these two lines breaks alchemist.repl, because it needs to mint kdx in there. this should be fixed properly some other way
+;; (kaddex.kdx.assign-privilege kaddex.kdx.BURN_PRIVILEGE (kaddex.wrapper.create-burn-guard kaddex.kdx))
+;; (kaddex.kdx.assign-privilege kaddex.kdx.MINT_PRIVILEGE (kaddex.wrapper.create-mint-guard kaddex.kdx))
+
+(env-dynref fungible-v2 coin)
+(env-dynref kaddex.swap-callable-v1 kaddex.noop-callable)
+
+(commit-tx)
+
+;; test upgradeability
+;; (begin-tx "Test upgradeability")
+;; (env-data
+;;   { 'kaddex-ns-user: ["kaddex-user"]
+;;    , 'kaddex-ns-admin: ["kaddex-admin"]
+;;    , 'ns: "kaddex"
+;;    , 'upgrade: true})
+;; (env-keys ["operate", "kaddex-user", "kaddex-admin"])
+
+;; (load "../kadenaswap/ns.pact")
+;; (load "../kadenaswap/fungible-util.pact")
+;; (load "../kadenaswap/tokens.pact")
+;; (load "../kadenaswap/exchange.pact")
+
+(begin-tx "Test funding")
+(load "../kadenaswap/test/tokens-test-fungible.pact")
+(load "../kadenaswap/test/fungible.repl")
+(test-capability (kaddex.tokens.CREDIT TOKEN FUNDER_ACCT))
+(expect "fund success" true
+  (test-fund FUNDER_ACCT FUNDER_GUARD FUNDER_BALANCE))
+(commit-tx)

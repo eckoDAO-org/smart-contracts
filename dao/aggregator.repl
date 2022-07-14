@@ -1,0 +1,189 @@
+(begin-tx)
+
+;;Load Namespace Contract
+(env-data
+ { 'ns-admin-keyset: ["admin"]
+ , 'ns-operate-keyset: ["operate"]
+ , 'ns-genesis-keyset: { "keys": [], "pred": "="} })
+(load "./root/ns.pact")
+
+;;Load Coin Contract
+(load "./root/fungible-v2.pact")
+(load "./root/coin.pact")
+
+;;Load utils Contract
+; (env-data
+;  { 'util-ns-users: ["util-ns-user"]
+;  , 'util-ns-admin: ["util-ns-admin"]
+;  })
+; (env-keys ["util-ns-user", "util-ns-admin"])
+; (load "./util/ns.pact")
+(load "./root/guards.pact")
+
+
+(commit-tx)
+
+
+(begin-tx)
+(env-data
+  { 'bob: ["bob"]
+  ,'alice: ["alice"]
+  ,'tom: ["tom"]})
+(env-keys ["bob", "alice","tom"])
+(test-capability (coin.COINBASE))
+(coin.coinbase "bobaddress" (read-keyset 'bob) 1000.0)
+(coin.coinbase "aliceaddress" (read-keyset 'alice) 1000.0)
+(coin.coinbase "tomaddress" (read-keyset 'tom) 1000.0)
+
+(commit-tx)
+; (begin-tx)
+; ; (load "pact/aggregator.pact")
+;
+; (load "root/fungible-v2.pact")
+; (load "root/coin.pact")
+; (load "root/guards.pact")
+; (load "root/priv-sale.pact")
+;
+;
+; (commit-tx)
+
+
+(begin-tx)
+
+(env-data
+  { 'kaddex-ns-admin: ["admin"]
+  , 'kaddex-ns-ops: ["operate"]
+  , 'ns: "free"
+  , 'upgrade: false})
+(env-keys ["admin", "operate"])
+(define-keyset "kaddex-ns-admin" (read-keyset "kaddex-ns-admin"))
+(define-keyset "kaddex-ns-ops" (read-keyset "kaddex-ns-ops"))
+(env-enable-repl-natives true) ;; enables usage of (print)
+(load "./aggregator.pact")
+
+(env-chain-data {"block-time": (time "2022-03-24T23:59:00Z")})
+
+(use free.aggregator)
+
+(grant-privilege (read-keyset 'kaddex-ns-ops ) "aggregate-stake")
+(grant-privilege (read-keyset 'kaddex-ns-ops ) "aggregate-unstake")
+
+
+(env-data
+  { 'kaddex-ns-ops: ["operate"]})
+(env-keys ["operate"])
+
+
+(aggregate-stake "bobaddress" 10.0)
+
+
+(get-account-data "bobaddress")
+(env-chain-data {"block-time": (time "2022-04-24T23:59:00Z")})
+(aggregate-stake "bobaddress" 90.0)
+(get-account-data "bobaddress")
+(env-chain-data {"block-time": (time "2022-05-24T23:59:00Z")})
+(get-account-data "bobaddress")
+(env-chain-data {"block-time": (time "2022-04-24T23:59:00Z")})
+(get-account-data "bobaddress")
+(env-chain-data {"block-time": (time "2022-05-24T23:59:00Z")})
+
+(get-account-data "bobaddress")
+(env-chain-data {"block-time": (time "2022-10-31T23:59:00Z")})
+
+(get-account-data "bobaddress")
+(env-chain-data {"block-time": (time "2023-12-24T23:59:00Z")})
+(get-account-data "bobaddress")
+(aggregate-stake "bobaddress" 500.0)
+(get-account-data "bobaddress")
+(env-chain-data {"block-time": (time "2024-02-10T23:59:00Z")})
+
+(aggregate-unstake "bobaddress" 600.0)
+(get-account-data "bobaddress")
+
+(env-chain-data {"block-time": (time "2024-06-10T23:59:00Z")})
+(aggregate-stake "bobaddress" 10.0)
+(get-account-data "bobaddress")
+
+
+
+
+
+
+; (insert-lockup-batch [{"account":"k:4931c8637de2d1e3a6bb8764ec2120b99b0fc7ba8b2b523a5e60e385fb2129dd", "amount": 10.0}])
+; (get-account-data "k:4931c8637de2d1e3a6bb8764ec2120b99b0fc7ba8b2b523a5e60e385fb2129dd")
+
+
+
+; (env-chain-data {"block-time": (time "2022-03-24T23:59:00Z")})
+; (get-multiplier-by-account "bobaddress")
+; (env-chain-data {"block-time": (time "2022-04-24T23:59:00Z")})
+; (get-multiplier-by-account "bobaddress")
+; (env-chain-data {"block-time": (time "2022-05-24T23:59:00Z")})
+; (get-multiplier-by-account "bobaddress")
+; (env-chain-data {"block-time": (time "2022-06-24T23:59:00Z")})
+; (get-multiplier-by-account "bobaddress")
+; (env-chain-data {"block-time": (time "2022-07-24T23:59:00Z")})
+; (get-multiplier-by-account "bobaddress")
+; (env-chain-data {"block-time": (time "2022-08-24T23:59:00Z")})
+; (get-multiplier-by-account "bobaddress")
+; (get-account-data "bobaddress")
+; ; (aggregate-stake "alice" 500.0)
+; (env-chain-data {"block-time": (time "2024-02-20T23:59:00Z")})
+; (get-voting-power "bobaddress")
+; (get-multiplier-by-account "bobaddress")
+; (get-account-data "bobaddress")
+; (aggregate-stake "bobaddress" 100.0)
+; (env-chain-data {"block-time": (time "2022-06-24T23:59:00Z")})
+; ; (get-voting-power "alice")
+; (read-all-staking)
+; (aggregate-unstake "bobaddress" 200.0)
+; (read-all-staking)
+; (env-chain-data {"block-time": (time "2022-06-27T23:59:00Z")})
+; (aggregate-stake "bobaddress" 300.0)
+; (read-all-staking)
+; (get-voting-power "bobaddress")
+; (env-chain-data {"block-time": (time "2022-07-27T23:59:00Z")})
+; (get-voting-power "bobaddress")
+; (aggregate-stake "bobaddress" 100.0)
+; (read-all-staking)
+; (get-voting-power "bobaddress")
+; (env-chain-data {"block-time": (time "2022-08-27T23:59:00Z")})
+; (get-voting-power "bobaddress")
+; (aggregate-unstake "bobaddress" 200.0)
+; (read-all-staking)
+; (get-voting-power "bobaddress")
+; (aggregate-stake "alice" -500.0)
+; (env-chain-data {"block-time": (time "2022-09-24T23:59:00Z")})
+; (get-voting-power "bobaddress")
+; (get-voting-power "alice")
+; (aggregate-stake "bobaddress" 300.0)
+; (aggregate-unstake "alice" 300.0)
+; (get-voting-power "bobaddress")
+; (get-voting-power "alice")
+;
+; (env-chain-data {"block-time": (time "2022-12-24T23:59:00Z")})
+; (read-all-staking)
+; (get-voting-power "bobaddress")
+; (get-voting-power "alice")
+; (get-voting-power "tomaddress")
+; ; (aggregate-stake "tomaddress" 300.0)
+; (aggregate-stake "alice" 200.0)
+; (get-voting-power "alice")
+; (env-chain-data {"block-time": (time "2023-06-26T23:59:00Z")})
+; (get-voting-power "alice")
+; (aggregate-stake "tomaddress" 100.0)
+; (aggregate-stake "alice" 100.0)
+; (read-all-staking)
+; (get-voting-power "bobaddress")
+; (get-voting-power "alice")
+; (get-voting-power "tomaddress")
+;
+; (env-chain-data {"block-time": (time "2030-01-24T23:59:00Z")})
+; (aggregate-stake "tomaddress" 300.0)
+; (expect-failure "ACCOUNT DOES NOT EXIST" "Account does not exist" (aggregate-unstake "pippo" 300.0))
+; (read-all-staking)
+; (get-voting-power "bobaddress")
+; (get-voting-power "alice")
+; (get-voting-power "tomaddress")
+
+(commit-tx)

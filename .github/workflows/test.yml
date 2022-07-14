@@ -1,0 +1,112 @@
+# This is a basic workflow to help you get started with Actions
+
+name: CI
+
+# Controls when the action will run.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "build"
+  test-pact:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v2
+
+      - name: Get pact binary
+        run: |
+          mkdir bin
+          cd bin
+          wget https://github.com/kadena-io/pact/releases/download/v4.3/pact-4.3-linux-18.04.zip
+          unzip "pact*.zip"
+          chmod +x pact
+          cd ..
+      - name: Install z3 (ubuntu-18.04)
+        uses: pavpanchekha/setup-z3@0.2.0
+        with:
+          version: "4.8.10"
+          architecture: "x64"
+          distribution: "ubuntu-18.04"
+
+      - name: wrapper/init.repl
+        run: |
+          bin/pact -t wrapper/init.repl > out.log 2>&1
+          cat out.log
+          r=`tail -1 out.log | grep "Load successful"`
+          if [ -n "$r" ]; then exit 0; else echo "Pact run failed."; exit 1; fi
+
+      - name: kadenaswap/exchange.repl
+        run: |
+          bin/pact -t kadenaswap/exchange.repl > out.log 2>&1
+          cat out.log
+          r=`tail -1 out.log | grep "Load successful"`
+          if [ -n "$r" ]; then exit 0; else echo "Pact run failed."; exit 1; fi
+
+      - name: kadenaswap/tokens.repl
+        run: |
+          bin/pact -t kadenaswap/tokens.repl > out.log 2>&1
+          cat out.log
+          r=`tail -1 out.log | grep "Load successful"`
+          if [ -n "$r" ]; then exit 0; else echo "Pact run failed."; exit 1; fi
+
+      - name: kadenaswap/oracle.repl
+        run: |
+          bin/pact -t kadenaswap/oracle.repl > out.log 2>&1
+          cat out.log
+          r=`tail -1 out.log | grep "Load successful"`
+          if [ -n "$r" ]; then exit 0; else echo "Pact run failed."; exit 1; fi
+
+      - name: wrapper/tokens/alchemist.repl
+        run: |
+          bin/pact -t wrapper/tokens/alchemist.repl > out.log 2>&1
+          cat out.log
+          r=`tail -1 out.log | grep "Load successful"`
+          if [ -n "$r" ]; then exit 0; else echo "Pact run failed."; exit 1; fi
+
+      - name: staking/staking.repl
+        run: |
+          set +e
+          bin/pact -t staking/staking.repl > out.log 2>&1
+          set -e
+          cat out.log
+          r=`grep "Expect: success: No failed traces" out.log`
+          if [ -n "$r" ]; then exit 0; else echo "Pact run failed."; exit 1; fi
+
+      - name: wrapper/wrapper.repl
+        run: |
+          bin/pact -t wrapper/wrapper.repl > out.log 2>&1
+          cat out.log
+          r=`tail -1 out.log | grep "Load successful"`
+          if [ -n "$r" ]; then exit 0; else echo "Pact run failed."; exit 1; fi
+
+      - name: dao/dao.repl
+        run: |
+          bin/pact -t dao/dao.repl > out.log 2>&1
+          cat out.log
+          r=`tail -1 out.log | grep "Load successful"`
+          if [ -n "$r" ]; then exit 0; else echo "Pact run failed."; exit 1; fi
+
+      - name: dao/aggregator.repl
+        run: |
+          bin/pact -t dao/aggregator.repl > out.log 2>&1
+          cat out.log
+          r=`tail -1 out.log | grep "Load successful"`
+          if [ -n "$r" ]; then exit 0; else echo "Pact run failed."; exit 1; fi
+
+      - name: lockup/kdx-timelock.repl
+        run: |
+          bin/pact -t lockup/kdx-timelock.repl > out.log 2>&1
+          cat out.log
+          r=`tail -1 out.log | grep "Load successful"`
+          if [ -n "$r" ]; then exit 0; else echo "Pact run failed."; exit 1; fi

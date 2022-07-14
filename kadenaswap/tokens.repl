@@ -1,0 +1,77 @@
+(begin-tx)
+  (env-data
+    { 'ns-admin-keyset: ["admin"]
+    , 'ns-operate-keyset: ["operate"]
+    , 'ns-genesis-keyset: { "keys": [], "pred": "="} })
+  (load "root/ns.pact")
+
+  (env-data
+    { 'kaddex-ns-user: ["kaddex-user"]
+    , 'kaddex-ns-admin: ["kaddex-admin"]
+    , 'ns: "kaddex"
+    , 'upgrade: 0
+    })
+  (env-keys ["operate", "kaddex-user", "kaddex-admin"])
+
+  (load "ns.pact")
+  (load "fungible-util.pact")
+  (load "tokens.pact")
+
+(commit-tx)
+
+;;  k: account validation
+(begin-tx)
+  (use kaddex.tokens)
+
+  ; set user1 keys and set sig
+  (env-data
+    { "user1-non-k" : ["user1-keys"]
+    , "user1-k" : ["user1"]
+    })
+
+  (env-keys ["user1-non-k-key", "user1"])
+
+  ; reserved keyword, guard must match everything behind the k:
+  (expect-failure
+    "Account creation fails for k:user1"
+    "Single-key account protocol violation"
+    (create-account "kaddex.abc" "k:user1" (read-keyset "user1-non-k")))
+
+  (expect
+    "Account creation succeeds for k:user1"
+    "Write succeeded"
+    (create-account "kaddex.abc" "k:user1" (read-keyset "user1-k")))
+
+(commit-tx)
+
+;;  u: account validation
+(begin-tx)
+  (use kaddex.tokens)
+
+  ; set user1 keys and set sig
+  (env-data {
+    "user1-keyset" : ["user1"]
+    })
+
+  (env-keys ["user1"])
+
+  (module testmodule G
+    (defcap G ()
+      true)
+
+    (defun uguard-function (ks1)
+      (enforce-keyset ks1))
+  )
+
+  (hash 'user1-keyset)
+
+  (expect-failure
+    "Account creation fails for account with user-guard"
+    "Reserved protocol guard violation"
+    (create-account "kaddex.xyz" "u:user1" (create-user-guard (testmodule.uguard-function "user1-keyset"))))
+
+  (expect
+    "Account creation succeeds for account with user-guard"
+    "Write succeeded"
+    (create-account "kaddex.xyz" "u:testmodule.uguard-function:OsxABr56JzUA8ubHhhB_Ft1PsYhwlPbDTpxMCbb46LI" (create-user-guard (testmodule.uguard-function "user1-keyset"))))
+(commit-tx)

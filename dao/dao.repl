@@ -1,0 +1,256 @@
+(begin-tx)
+
+;;Load Namespace Contract
+(env-data
+ { 'ns-admin-keyset: ["admin"]
+ , 'ns-operate-keyset: ["operate"]
+ , 'ns-genesis-keyset: { "keys": [], "pred": "="} })
+(load "./root/ns.pact")
+
+;;Load Coin Contract
+(load "./root/fungible-v2.pact")
+(load "./root/coin.pact")
+(load "./root/guards.pact")
+
+
+(env-data
+  { 'kaddex-ns-admin: ["admin"]
+  , 'kaddex-ns-ops: ["operate"]
+  , 'ns: "kaddex"
+  , 'upgrade: false})
+(env-keys ["admin", "operate"])
+(define-keyset "kaddex-ns-admin" (read-keyset "kaddex-ns-admin"))
+(define-keyset "kaddex-ns-ops" (read-keyset "kaddex-ns-ops"))
+(env-enable-repl-natives true) ;; enables usage of (print)
+(load "./aggregator.pact")
+
+(env-data
+  { 'kaddex-ns-admin: ["admin"]
+  , 'kaddex-ns-ops: ["operate"]
+  , 'ns: "kaddex"
+  , 'upgrade: false})
+(env-keys ["admin", "operate"])
+(env-enable-repl-natives true) ;; enables usage of (print)
+(load "./dao.pact")
+
+
+
+(commit-tx)
+
+;; Define Account Wallet
+(begin-tx)
+(env-data
+  { 'bob: ["bob"]
+  ,'alice: ["alice"]
+  ,'gov:["gov"]
+  , 'henry:["henry"]
+  , 'stark:["stark"]})
+(env-keys ["gov", "stark", "bob", "alice", "henry"])
+(test-capability (coin.COINBASE))
+(coin.coinbase "bobaddress" (read-keyset 'bob) 1000.0)
+(coin.coinbase "aliceaddress" (read-keyset 'alice) 1000.0)
+(coin.coinbase "henryaddress" (read-keyset 'henry) 1000.0)
+(coin.coinbase "starkaddress" (read-keyset 'stark) 1000.0)
+(coin.coinbase "k:govaddress" (read-keyset 'gov) 1000.0)
+
+(commit-tx)
+
+
+(begin-tx)
+(use kaddex.aggregator)
+(use kaddex.dao)
+
+(env-data
+  { 'kaddex-ns-admin: ["admin"]
+  , 'kaddex-ns-ops: ["operate"]
+  , 'ns: "kaddex"})
+(env-keys ["admin", "operate"])
+
+(grant-privilege (read-keyset 'kaddex-ns-ops ) "aggregate-stake")
+(grant-privilege (read-keyset 'kaddex-ns-ops ) "aggregate-unstake")
+(commit-tx)
+(begin-tx)
+(use kaddex.aggregator)
+(use kaddex.dao)
+;;;CREATION PROPOSALS 1
+; (env-data
+;   { 'dao-keyset: ["gov"],
+;     'dao-ops-keyset: ["operate"],
+;     'aggregator-keyset: ["gov"],
+;     'bob:["bob"]
+;   })
+; (env-keys ["gov","operate","bob"])
+
+(env-data
+  { 'kaddex-ns-ops: ["operate"]})
+(env-keys ["operate"])
+
+
+(env-chain-data {"block-time": (time "2022-02-10T23:59:00Z")})
+(aggregate-stake "bobaddress" 500.0)
+
+(aggregate-stake "aliceaddress" 600.0)
+;; Uncomment the following line and comment the above line for error "This account does not have sufficient votes to vote"
+; (aggregate-stake "aliceaddress" 590.0)
+
+(aggregate-stake "henryaddress" 300.0)
+(aggregate-stake "starkaddress" 100.0)
+
+
+
+(env-chain-data {"block-time": (time "2022-05-10T14:59:00Z")})
+
+;
+; (env-data  { 'kaddex-ns-ops: ["operate"]})
+; (env-keys ["operate"])
+
+
+(env-sigs [
+  {  'key: "operate",
+   'caps: [(OPS)]}
+  ])
+(test-capability (OPS))
+
+(create-proposal "New interesting proposal" "this is a test" "k:govaddress" (time "2022-05-10T23:59:00Z") (time "2022-05-20T23:59:00Z"))
+(create-proposal "Proposal about the gas" "Gas needs to be reduced" "k:govaddress" (time "2022-05-11T23:59:00Z") (time "2022-05-15T23:59:00Z"))
+(create-proposal "New interesting proposal 1" "this is a test" "k:govaddress" (time "2022-05-12T23:59:00Z") (time "2022-05-16T23:59:00Z"))
+(create-proposal "Proposal about the gas 1" "Gas needs to be reduced" "k:govaddress" (time "2022-05-13T23:59:00Z") (time "2022-05-15T23:59:00Z"))
+(create-proposal "New interesting proposal 2" "this is a test" "k:govaddress" (time "2022-05-14T23:59:00Z") (time "2022-05-20T23:59:00Z"))
+(create-proposal "Proposal about the gas 2" "Gas needs to be reduced" "k:govaddress" (time "2022-05-15T23:59:00Z") (time "2022-05-18T23:59:00Z"))
+(create-proposal "New interesting proposal 3" "this is a test" "k:govaddress" (time "2022-05-16T23:59:00Z") (time "2022-05-20T23:59:00Z"))
+(create-proposal "Proposal about the gas 3" "Gas needs to be reduced" "k:govaddress" (time "2022-05-17T23:59:00Z") (time "2022-05-23T23:59:00Z"))
+
+;; Uncomment the following line for error "Number of votes can't be less than or equal to zero"
+; (approved-vote "New interesting proposal" "henryaddress" -2.0)
+(env-chain-data {"block-time": (time "2022-05-15T14:59:00Z")})
+(env-sigs [
+  {  'key: "bob",
+   'caps: [(ACCOUNT_GUARD "bobaddress")]}
+  ])
+
+
+  (approved-vote "Dn_zEzg1xaNeCLn7OAKb3ciuGir-R7iAnq3P1ataSDA" "bobaddress")
+
+(env-sigs [
+  {  'key: "alice",
+   'caps: [(ACCOUNT_GUARD "aliceaddress")]}
+  ])
+(approved-vote "Dn_zEzg1xaNeCLn7OAKb3ciuGir-R7iAnq3P1ataSDA" "aliceaddress")
+(env-sigs [
+  {  'key: "bob",
+   'caps: [(ACCOUNT_GUARD "bobaddress")]}
+  ])
+
+  (refused-vote "Xl2I6UWrRr6ZtgsIorEyP-JhhGzp7HqoSOrkjWGrQ7M" "bobaddress")
+
+(env-sigs [
+  {  'key: "alice",
+   'caps: [(ACCOUNT_GUARD "aliceaddress")]}
+  ])
+(refused-vote "Xl2I6UWrRr6ZtgsIorEyP-JhhGzp7HqoSOrkjWGrQ7M" "aliceaddress")
+(env-sigs [
+  {  'key: "bob",
+   'caps: [(ACCOUNT_GUARD "bobaddress")]}
+  ])
+(approved-vote "1eAR6SzJ3Qv3C96nsh780CPw9MumN0b2HQFbGgoCsTc" "bobaddress")
+(env-sigs [
+  {  'key: "alice",
+   'caps: [(ACCOUNT_GUARD "aliceaddress")]}
+  ])
+(approved-vote "1eAR6SzJ3Qv3C96nsh780CPw9MumN0b2HQFbGgoCsTc" "aliceaddress")
+(env-sigs [
+  {  'key: "bob",
+   'caps: [(ACCOUNT_GUARD "bobaddress")]}
+  ])
+(refused-vote "9GTVeQ4u56eKqWZu2EnMiUI_YSi18KdEcpQ6z4yV6_Y" "bobaddress")
+(env-sigs [
+  {  'key: "alice",
+   'caps: [(ACCOUNT_GUARD "aliceaddress")]}
+  ])
+(refused-vote "9GTVeQ4u56eKqWZu2EnMiUI_YSi18KdEcpQ6z4yV6_Y" "aliceaddress")
+(env-sigs [
+  {  'key: "bob",
+   'caps: [(ACCOUNT_GUARD "bobaddress")]}
+  ])
+(approved-vote "pVzst9xsruovXr3B4eH5jVpdfgexVc54t_s0gGxvdQo" "bobaddress")
+(env-sigs [
+  {  'key: "alice",
+   'caps: [(ACCOUNT_GUARD "aliceaddress")]}
+  ])
+(approved-vote "pVzst9xsruovXr3B4eH5jVpdfgexVc54t_s0gGxvdQo" "aliceaddress")
+
+(env-chain-data {"block-time": (time "2022-05-18T14:59:00Z")})
+
+(env-sigs [
+  {  'key: "bob",
+   'caps: [(ACCOUNT_GUARD "bobaddress")]}
+  ])
+(refused-vote "xin4N21OGZgzvDfQLW44l8ZphDJ3uNyUM1KxkMTa-sA" "bobaddress")
+(env-sigs [
+  {  'key: "alice",
+   'caps: [(ACCOUNT_GUARD "aliceaddress")]}
+  ])
+(refused-vote "xin4N21OGZgzvDfQLW44l8ZphDJ3uNyUM1KxkMTa-sA" "aliceaddress")
+(env-sigs [
+  {  'key: "bob",
+   'caps: [(ACCOUNT_GUARD "bobaddress")]}
+  ])
+(approved-vote "VdFvmuAY2_JNzHdCoRM1tOrcaRnEq4MjKU7PBHMx1hM" "bobaddress")
+(env-sigs [
+  {  'key: "alice",
+   'caps: [(ACCOUNT_GUARD "aliceaddress")]}
+  ])
+(approved-vote "VdFvmuAY2_JNzHdCoRM1tOrcaRnEq4MjKU7PBHMx1hM" "aliceaddress")
+(env-sigs [
+  {  'key: "stark",
+   'caps: [(ACCOUNT_GUARD "starkaddress")]}
+  ])
+(approved-vote "Dn_zEzg1xaNeCLn7OAKb3ciuGir-R7iAnq3P1ataSDA" "starkaddress")
+
+
+
+(env-sigs [
+  {  'key: "bob",
+   'caps: [(ACCOUNT_GUARD "bobaddress")]}
+  ])
+(refused-vote "l08jpEhd3vcYHWcYMp4HZP4yW5YFW_QNrP_EsIg87qo" "bobaddress")
+(env-sigs [
+  {  'key: "alice",
+   'caps: [(ACCOUNT_GUARD "aliceaddress")]}
+  ])
+(approved-vote "l08jpEhd3vcYHWcYMp4HZP4yW5YFW_QNrP_EsIg87qo" "aliceaddress")
+
+
+;; Uncomment the following line for error "This account has already voted to this proposal"
+; (approved-vote "Proposal about the gas 3" "bobaddress")
+
+(get-proposals-ids)
+
+(env-sigs [
+  {  'key: "operate",
+   'caps: [(OPS)]}
+  ])
+
+
+; (approved-vote "Dn_zEzg1xaNeCLn7OAKb3ciuGir-R7iAnq3P1ataSDA" "bobaddress")
+; (refused-vote "Dn_zEzg1xaNeCLn7OAKb3ciuGir-R7iAnq3P1ataSDA" "aliceaddress")
+
+(read-all-staking)
+(read-all-proposals)
+
+(get-account-data "bobaddress")
+(get-account-data "aliceaddress")
+(read-account-vote-proposal "aliceaddress" "l08jpEhd3vcYHWcYMp4HZP4yW5YFW_QNrP_EsIg87qo")
+(get-account-data "aliceaddress")
+(read-account-votes "bobaddress")
+
+(env-gas 0)
+(env-gaslog)
+(check-account-voted "bobaddress" "VdFvmuAY2_JNzHdCoRM1tOrcaRnEq4MjKU7PBHMx1hM" )
+(env-gaslog)
+(env-gas)
+
+
+
+
+(commit-tx)

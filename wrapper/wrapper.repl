@@ -1,0 +1,483 @@
+(load "init.repl")
+
+(begin-tx "Load ABC and XYZ")
+
+(env-data { 'ns: "kaddex", 'upgrade: false})
+(env-chain-data { 'block-time: (time "2022-01-01T00:00:00Z") })
+(load "../kadenaswap/test/ABC.pact")
+(load "../kadenaswap/test/XYZ.pact")
+
+(commit-tx)
+
+(begin-tx "Create accounts and fund")
+(env-sigs [])
+
+;; test pair canonicity
+(use kaddex.exchange)
+(expect "canonical pair keys match"
+  (get-pair-key kaddex.abc coin)
+  (get-pair-key coin kaddex.abc))
+(expect "pair does not exist yet" false
+  (pair-exists kaddex.abc coin))
+
+;; test governance on create-pair
+(expect
+  "create pair succeeds without governance"
+  {"key": (get-pair-key coin kaddex.abc), "account": (create-pair-account (get-pair-key coin kaddex.abc) "")}
+  (create-pair coin kaddex.abc ""))
+
+
+(create-pair coin kaddex.kdx "")
+;; (create-pair kaddex.abc kaddex.kdx "")
+
+(env-keys ["kaddex-admin"])
+
+(expect-failure
+  "Pair already exists"
+  (create-pair coin kaddex.abc ""))
+(create-pair coin kaddex.xyz "")
+(expect "create-pair (2) events" ;; TODO reverse
+  [ { "name": "kaddex.exchange.CREATE_PAIR"
+     , "params": [ coin kaddex.abc "coin:kaddex.abc"
+                   (at 'account (get-pair kaddex.abc coin))]
+     , "module-hash": (at 'hash (describe-module "kaddex.exchange"))}
+
+    { "name": "kaddex.exchange.CREATE_PAIR"
+     , "params": [ coin kaddex.kdx "coin:kaddex.kdx"
+                   (at 'account (get-pair kaddex.kdx coin))]
+     , "module-hash": (at 'hash (describe-module "kaddex.exchange"))}
+
+    ;; { "name": "kaddex.exchange.CREATE_PAIR"
+    ;;  , "params": [ kaddex.abc kaddex.kdx "kaddex.abc:kaddex.kdx"
+    ;;                (at 'account (get-pair kaddex.abc kaddex.kdx))]
+    ;;  , "module-hash": (at 'hash (describe-module "kaddex.exchange"))}
+
+    { "name": "kaddex.exchange.CREATE_PAIR"
+     , "params": [ coin kaddex.xyz "coin:kaddex.xyz"
+                   (at 'account (get-pair kaddex.xyz coin))]
+     , "module-hash": (at 'hash (describe-module "kaddex.exchange"))}]
+
+
+  (env-events true))
+
+(env-data
+  { 'bob: ["bob"]
+   , 'alice: ["alice"]
+   , 'carl: ["carl"]
+   , 'kaddex-ns-admin: ["kaddex-admin"]})
+
+(test-capability (coin.COINBASE))
+(coin.coinbase "Bob" (read-keyset 'bob) 1000.0)
+(kaddex.abc.create-account "Bob" (read-keyset 'bob))
+(kaddex.abc.fund "Bob" 2000.0)
+(kaddex.xyz.create-account "Bob" (read-keyset 'bob))
+(kaddex.xyz.fund "Bob" 600.0)
+(coin.coinbase "Alice" (read-keyset 'alice) 1000000.0)
+(kaddex.abc.create-account "Alice" (read-keyset 'alice))
+(kaddex.abc.fund "Alice" 200000000.0)
+(coin.coinbase "Carl" (read-keyset 'carl) 1000.0)
+(kaddex.abc.create-account "Carl" (read-keyset 'carl))
+(kaddex.abc.fund "Carl" 2000.0)
+(commit-tx)
+(begin-tx "Mint kdx to bob")
+
+(env-sigs
+  [ { 'key: 'kaddex-admin
+    , 'caps:
+    [ ]}])
+
+(test-capability (kaddex.kdx.GOVERNANCE))
+(kaddex.kdx.assign-privilege kaddex.kdx.MINT_PRIVILEGE (read-keyset "kaddex-ns-admin"))
+(env-chain-data { 'chain-id: "0" })
+(with-applied-env [
+  (kaddex.kdx.mint 'network-rewards 'Bob (read-keyset 'bob) 1000.0)
+  (kaddex.kdx.mint 'network-rewards 'Alice (read-keyset 'alice) 100000.0)
+  (kaddex.kdx.mint 'network-rewards 'Carl (read-keyset 'carl) 1000.0)
+])
+
+(kaddex.kdx.assign-privilege kaddex.kdx.MINT_PRIVILEGE (kaddex.wrapper.create-mint-guard kaddex.kdx))
+(commit-tx)
+
+(begin-tx "Set up test fixtures")
+(use kaddex.exchange)
+
+(env-enable-repl-natives true)
+
+(module fixture G
+  (defcap G () true)
+  (defun setup-abc (amount0:decimal amount1:decimal)
+    (env-sigs
+      [ { 'key: "bob"
+         , 'caps:
+          [ (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) amount0)
+            (kaddex.abc.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) amount1)]}])
+
+    (with-applied-env
+      (kaddex.wrapper.add-liquidity coin kaddex.abc
+        amount0 amount1 amount0 amount1
+        "Bob" "Bob" (read-keyset "bob")))
+
+    (env-events true))
+
+
+  (defun setup-xyz (amount0:decimal amount1:decimal)
+    (env-sigs
+      [ { 'key: "bob"
+         , 'caps:
+          [ (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.xyz coin)) amount0)
+            (kaddex.xyz.TRANSFER "Bob" (at 'account (get-pair kaddex.xyz coin)) amount1)]}])
+
+    (with-applied-env
+      (kaddex.wrapper.add-liquidity coin kaddex.xyz
+        amount0 amount1 amount0 amount1
+        "Bob" "Bob" (read-keyset "bob")))
+
+    (env-events true))
+
+  (defconst START_TIME:time (time "2022-02-01T00:00:00Z"))
+  (defconst EPOCH_LENGTH:decimal (days 1.0))
+  (defun get-time-for-epoch:time (epoch:integer) (add-time START_TIME (* epoch EPOCH_LENGTH)))
+
+  (defun one-swap (idx:integer amount-in:decimal)
+    (let ((pair-A (at 'account (kaddex.exchange.get-pair coin kaddex.abc)))
+          (pair-B (at 'account (kaddex.exchange.get-pair coin kaddex.kdx)))
+          )
+      (env-sigs [ { 'key: "alice", 'caps: [(coin.TRANSFER "Alice" pair-A amount-in)
+                                           (kaddex.abc.TRANSFER "Alice" pair-A amount-in)
+                                           (coin.TRANSFER "Alice" pair-B amount-in)
+                                           (kaddex.kdx.TRANSFER "Alice" pair-B amount-in)] } ])
+      (env-chain-data { 'block-time: (get-time-for-epoch idx) })
+      (begin-tx "Swap")
+      (with-applied-env
+          [(kaddex.exchange.swap-exact-in amount-in 0.0 [coin kaddex.abc] "Alice" "Alice" (read-keyset "alice"))
+           (kaddex.exchange.swap-exact-in amount-in 0.0 [kaddex.abc coin] "Alice" "Alice" (read-keyset "alice"))
+           (kaddex.exchange.swap-exact-in amount-in 0.0 [coin kaddex.kdx] "Alice" "Alice" (read-keyset "alice"))
+           (kaddex.exchange.swap-exact-in amount-in 0.0 [kaddex.kdx coin] "Alice" "Alice" (read-keyset "alice"))])
+      (commit-tx))
+    )
+
+  (defun swap (start:integer end:integer amount-in:decimal)
+    (map (lambda (x) (one-swap x amount-in)) (enumerate start end)))
+  )
+
+
+
+(commit-tx)
+
+(begin-tx "Add tracked oracle paths to exchange")
+(env-sigs [{'key: "kaddex-ops", 'caps: [(kaddex.exchange.OPS)]}])
+(test-capability (kaddex.exchange.OPS))
+(kaddex.exchange.oracle-add-tracked-path [coin kaddex.kdx])
+(kaddex.exchange.oracle-add-tracked-path [kaddex.abc coin kaddex.kdx])
+(commit-tx)
+
+(kaddex.exchange.is-path-tracked [coin kaddex.kdx])
+(kaddex.exchange.is-path-tracked [kaddex.abc coin kaddex.kdx])
+
+(begin-tx "Add base liquidity/register pairs KDA:KDX, ABC:KDX")
+(use kaddex.exchange)
+(use kaddex.wrapper)
+
+(env-sigs
+  [ { 'key: "bob"
+     , 'caps:
+      [
+        (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.kdx coin)) 1.0)
+        (kaddex.abc.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 2.0)
+        (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 1.0)
+        (kaddex.kdx.TRANSFER "Bob" (at 'account (get-pair coin kaddex.kdx)) 1.0)
+      ]}
+    , {'key: 'kaddex-ops, 'caps: [(kaddex.wrapper.OPS)]}])
+
+(test-capability (kaddex.wrapper.OPS))
+(with-applied-env [
+                   (kaddex.wrapper.register-pair coin kaddex.kdx [coin kaddex.kdx] [kaddex.kdx] 1.0 1.0 1.0 1.0 'Bob 'test1)
+                   (kaddex.wrapper.register-pair coin kaddex.abc [coin kaddex.kdx] [kaddex.abc coin kaddex.kdx] 1.0 2.0 1.0 2.0 'Bob 'test1)])
+
+(with-applied-env (kaddex.wrapper.set-fee-multiplier-for-pair coin kaddex.abc 5.0))
+
+(commit-tx)
+
+;; (begin-tx "Create initial liquidity account using Bob's funds")
+;; (use kaddex.exchange)
+;; (use kaddex.wrapper)
+
+;; (env-sigs
+;;   [ { 'key: "bob"
+;;      , 'caps:
+;;       [ (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 0.5)
+;;         (kaddex.abc.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 1.0)]}
+;;     , {'key: 'kaddex-ops, 'caps: [(kaddex.wrapper.OPS)]}])
+
+;; (test-capability (kaddex.wrapper.OPS))
+;; (with-applied-env (kaddex.wrapper.register-pair coin kaddex.abc [coin kaddex.kdx] [kaddex.abc coin kaddex.kdx] 0.5 1.0 0.5 1.0 'Bob 'test1))
+;; ;;      , 'caps:
+;; ;;       [ (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 20.1)
+;; ;;         (kaddex.abc.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 80.4)]}
+;; ;;     , {'key: 'kaddex-admin, 'caps: [(kaddex.wrapper.GOVERNANCE)]}])
+;; ;; ;1.0 5.0 10.0 1.66249791562447
+;; ;; (test-capability (kaddex.wrapper.GOVERNANCE))
+;; ;; (with-applied-env (kaddex.wrapper.create-liquidity-account coin kaddex.abc 0.5 1.0 0.5 1.0 'Bob 'test1))
+
+;; (env-events true)
+;; (commit-tx)
+(begin-tx "Add liquidity with Bob's fund")
+
+(use kaddex.exchange)
+(use kaddex.wrapper)
+
+(env-sigs
+  [ { 'key: "bob"
+     , 'caps:
+      [ (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 4.5)
+        (kaddex.abc.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 9.0)]}])
+
+
+(with-applied-env
+  (kaddex.wrapper.add-liquidity coin kaddex.abc
+    4.5 9.0 4.5 9.0
+    "Bob" "Bob" (read-keyset "bob")))
+
+
+
+(env-keys ['kaddex-admin])
+(kaddex.wrapper.dump-positions)
+
+(env-events true)
+(commit-tx)
+
+(begin-tx "Add liquidity with Alice's funds")
+
+(use kaddex.exchange)
+(use kaddex.wrapper)
+
+(env-sigs
+  [ { 'key: "alice"
+     , 'caps:
+      [ (coin.TRANSFER "Alice" (at 'account (get-pair kaddex.abc coin)) 9.0)
+        (kaddex.abc.TRANSFER "Alice" (at 'account (get-pair kaddex.abc coin)) 18.0)]}])
+
+
+;; (env-chain-data { 'block-time: (time "2022-01-10T00:02:00Z") })
+(with-applied-env
+  (kaddex.wrapper.add-liquidity coin kaddex.abc
+    9.0 18.0 9.0 18.0
+    "Alice" "Alice" (read-keyset "alice")))
+
+
+
+(env-keys ['kaddex-admin])
+(kaddex.wrapper.dump-positions)
+
+(env-events true)
+(commit-tx)
+
+(kaddex.wrapper.get-user-position-stats coin kaddex.abc "Bob")
+
+(env-chain-data { 'block-time: (fixture.get-time-for-epoch 0) })
+(fixture.swap 1 100 10.0)
+(env-chain-data { 'block-time: (fixture.get-time-for-epoch 101) })
+
+(kaddex.wrapper.get-liquidity-position coin kaddex.abc "Bob")
+(kaddex.wrapper.get-user-position-stats coin kaddex.abc "Bob")
+(kaddex.wrapper.get-user-position-stats coin kaddex.abc "Alice")
+
+(begin-tx "Increase multiplier")
+(env-sigs [ {'key: 'kaddex-ops, 'caps: [(kaddex.wrapper.OPS)]}])
+(test-capability (kaddex.wrapper.OPS))
+(with-applied-env (kaddex.wrapper.set-fee-multiplier-for-pair coin kaddex.abc 20.0))
+(commit-tx)
+
+(begin-tx "Update positions for new multiplier")
+(kaddex.wrapper.update-single-position-for-new-multiplier coin kaddex.abc "Bob")
+(kaddex.wrapper.update-single-position-for-new-multiplier coin kaddex.abc "Alice")
+(commit-tx)
+
+(kaddex.wrapper.get-liquidity-position coin kaddex.abc "Bob")
+(kaddex.wrapper.get-user-position-stats coin kaddex.abc "Bob")
+(kaddex.wrapper.get-user-position-stats coin kaddex.abc "Alice")
+
+(env-chain-data { 'block-time: (fixture.get-time-for-epoch 101) })
+(fixture.swap 101 120 5.0)
+(env-chain-data { 'block-time: (fixture.get-time-for-epoch 121) })
+
+(kaddex.wrapper.get-liquidity-position coin kaddex.abc "Bob")
+(kaddex.wrapper.get-user-position-stats coin kaddex.abc "Bob")
+(kaddex.wrapper.get-user-position-stats coin kaddex.abc "Alice")
+
+(begin-tx "Lower multiplier")
+(env-sigs [ {'key: 'kaddex-ops, 'caps: [(kaddex.wrapper.OPS)]}])
+(test-capability (kaddex.wrapper.OPS))
+(with-applied-env (kaddex.wrapper.set-fee-multiplier-for-pair coin kaddex.abc 1.5))
+(commit-tx)
+
+(begin-tx "Update positions for new multiplier")
+(kaddex.wrapper.update-single-position-for-new-multiplier coin kaddex.abc "Bob")
+(kaddex.wrapper.update-single-position-for-new-multiplier coin kaddex.abc "Alice")
+(commit-tx)
+
+(kaddex.wrapper.get-liquidity-position coin kaddex.abc "Bob")
+(kaddex.wrapper.get-user-position-stats coin kaddex.abc "Bob")
+(kaddex.wrapper.get-user-position-stats coin kaddex.abc "Alice")
+
+;;
+;; swap-exact-in
+;;
+
+(begin-tx "Test swap-exact-in (1)")
+(use kaddex.exchange)
+(use kaddex.wrapper)
+
+(env-sigs [
+           { 'key: "alice"
+            , 'caps:
+             [(coin.TRANSFER "Alice" (at 'account (get-pair coin kaddex.abc)) 100.0)]}])
+
+
+(env-chain-data { 'block-time: (time "2022-01-20T00:02:00Z") })
+(with-applied-env
+    (kaddex.exchange.swap-exact-in 10.0 0.0 [coin kaddex.abc]
+                                   "Alice" "Alice" (read-keyset 'alice)))
+
+(env-events true)
+
+(commit-tx)
+
+(kaddex.wrapper.dump-positions)
+(kaddex.wrapper.dump-liquidity)
+
+(begin-tx "Test swap-exact-out (1)")
+(use kaddex.exchange)
+(use kaddex.wrapper)
+
+(env-sigs [
+           { 'key: "alice"
+            , 'caps:
+             [(kaddex.abc.TRANSFER "Alice" (at 'account (get-pair kaddex.abc coin)) 100.0)]}])
+
+
+(env-chain-data { 'block-time: (time "2022-01-30T00:10:00Z") })
+(with-applied-env
+    (kaddex.exchange.swap-exact-out 10.0 20.0 [kaddex.abc coin]
+                                    "Alice" "Alice" (read-keyset 'alice)))
+
+(env-events true)
+
+(commit-tx)
+
+(kaddex.wrapper.dump-positions)
+(kaddex.wrapper.dump-liquidity)
+
+;; (begin-tx "Remove very little liquidity from Bob")
+
+;; (env-enable-repl-natives true)
+
+;; (use kaddex.exchange)
+;; (use kaddex.wrapper)
+
+;; (env-keys ['kaddex-admin])
+;; (kaddex.wrapper.dump-positions)
+;; (kaddex.wrapper.dump-liquidity)
+
+;; (env-sigs
+;;   [ { 'key: "bob"
+;;     , 'caps:[]}])
+
+;; ; (with-applied-env
+;; ;   (kaddex.wrapper.remove-liquidity coin kaddex.abc
+;; ;     6.363961030674 0.01 0.01
+;; ;     "Bob" "Bob" (read-keyset "bob") false
+;; ;   )
+;; ; )
+
+
+;; (with-applied-env
+;;   (kaddex.wrapper.remove-liquidity coin kaddex.abc
+;;     0.00001 0.00000001 0.00000001
+;;     "Bob" "Bob" (read-keyset "bob") false
+;;   )
+;; )
+
+;; (env-events true)
+
+;; (env-keys ['kaddex-admin])
+;; (kaddex.wrapper.dump-positions)
+
+;; (commit-tx)
+
+(kaddex.wrapper.get-user-position-stats coin kaddex.abc "Bob")
+
+(begin-tx "Add liquidity again")
+
+(use kaddex.exchange)
+(use kaddex.wrapper)
+
+(env-sigs
+  [ { 'key: "bob"
+     , 'caps:
+      [ (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 4.5)
+        (kaddex.abc.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 9.0)]}])
+
+
+(with-applied-env
+  (kaddex.wrapper.add-liquidity coin kaddex.abc
+    4.5 9.0 0.0 0.0
+    "Bob" "Bob" (read-keyset "bob")))
+
+(commit-tx)
+
+(kaddex.wrapper.get-user-position-stats coin kaddex.abc "Bob")
+
+(begin-tx "Remove half of the liquidity from Bob")
+
+(with-applied-env
+  (kaddex.wrapper.remove-liquidity coin kaddex.abc
+    (floor (/ (at 'liquidity-tokens (kaddex.wrapper.get-liquidity-position coin kaddex.abc "Bob")) 2) 12) 0.01 0.01
+    "Bob" "Bob" (read-keyset "bob") true))
+
+
+(env-events true)
+(env-keys ['kaddex-admin])
+(kaddex.wrapper.dump-positions)
+(kaddex.wrapper.dump-liquidity)
+
+(commit-tx)
+
+;; FIXME: this fails because there arent enough fees collected
+;; (begin-tx "Advance claim request")
+;; (env-chain-data { 'block-time: (time "2022-02-21T00:10:00Z") })
+;; (with-applied-env
+;;   (let ((request-id (at 0 (kaddex.wrapper.get-user-pending-requests "Bob"))))
+;;     (kaddex.wrapper.process-claim-request-if-necessary request-id)
+;;   )
+;;   )
+;; (commit-tx)
+
+
+(begin-tx "Remove all the rest of the liquidity from Bob")
+
+(env-enable-repl-natives true)
+
+(use kaddex.exchange)
+(use kaddex.wrapper)
+
+(env-keys ['kaddex-admin])
+(kaddex.wrapper.dump-positions)
+(kaddex.wrapper.dump-liquidity)
+
+(env-sigs
+  [ { 'key: "bob"
+     , 'caps:[]}])
+
+(with-applied-env
+  (kaddex.wrapper.remove-liquidity coin kaddex.abc
+    (at 'liquidity-tokens (kaddex.wrapper.get-liquidity-position coin kaddex.abc "Bob")) 0.01 0.01
+    "Bob" "Bob" (read-keyset "bob") true))
+
+
+(env-events true)
+(env-keys ['kaddex-admin])
+(kaddex.wrapper.dump-positions)
+(kaddex.wrapper.dump-liquidity)
+
+(rollback-tx)

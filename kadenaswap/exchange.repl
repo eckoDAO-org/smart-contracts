@@ -1,0 +1,989 @@
+(begin-tx)
+(env-data
+ { 'ns-admin-keyset: ["admin"]
+ , 'ns-operate-keyset: ["operate"]
+ , 'ns-genesis-keyset: { "keys": [], "pred": "="} })
+(load "root/fungible-v2.pact")
+(load "root/coin.pact")
+(load "root/ns.pact")
+
+(env-data
+  { 'kaddex-ns-user: ["kaddex-user"]
+  , 'kaddex-ns-admin: ["kaddex-admin"]
+  , 'kaddex-ops-keyset: ["kaddex-ops"]
+  , 'ns: "kaddex"
+  , 'upgrade: 0
+  , 'initial-lock: false
+  })
+(define-keyset "kaddex-ops-keyset")
+(env-keys ["operate", "kaddex-user", "kaddex-admin"])
+
+(load "ns.pact")
+(load "fungible-util.pact")
+(load "tokens.pact")
+
+;(verify "kaddex.tokens")
+
+(load "swap-callable.pact")
+(commit-tx)
+
+;; test init-issuer guard
+(begin-tx)
+(env-keys [])
+(expect-failure "only admin can init-issuer"
+  "Keyset failure"
+  (kaddex.tokens.init-issuer (keyset-ref-guard 'kaddex-ns-admin)))
+(rollback-tx)
+
+(begin-tx)
+(env-data
+  { 'kaddex-ns-user: ["kaddex-user"]
+  , 'kaddex-ns-admin: ["kaddex-admin"]
+  , 'ns: "kaddex"
+  , 'upgrade: 0
+  , 'initial-lock: false
+  })
+(env-keys ["operate", "kaddex-user", "kaddex-admin"])
+(load "exchange.pact")
+
+(env-dynref fungible-v2 coin)
+(env-dynref kaddex.swap-callable-v1 kaddex.noop-callable)
+;(verify "kaddex.exchange")
+
+(env-data { 'ns: "kaddex", 'upgrade: false })
+(load "test/ABC.pact")
+(load "test/XYZ.pact")
+(commit-tx)
+
+;; test upgradeability
+;; (begin-tx)
+;; (env-data
+;;   { 'kaddex-ns-user: ["kaddex-user"]
+;;   , 'kaddex-ns-admin: ["kaddex-admin"]
+;;   , 'ns: "kaddex"
+;;   , 'upgrade: true })
+;; (env-keys ["operate", "kaddex-user", "kaddex-admin"])
+
+;; (load "ns.pact")
+;; (load "fungible-util.pact")
+;; (load "tokens.pact")
+;; (load "exchange.pact")
+
+(begin-tx)
+(load "test/tokens-test-fungible.pact")
+(load "test/fungible.repl")
+(test-capability (kaddex.tokens.CREDIT TOKEN FUNDER_ACCT))
+(expect "fund success" true
+  (test-fund FUNDER_ACCT FUNDER_GUARD FUNDER_BALANCE))
+(commit-tx)
+
+(fungible-v2-test.suite tokens-test-fungible
+   fungible-test-helper-default "transfer-crosschain-tests")
+
+(begin-tx)
+(env-sigs [])
+
+;; test pair canonicity
+(use kaddex.exchange)
+(expect "canonical pair keys match"
+  (get-pair-key kaddex.abc coin)
+  (get-pair-key coin kaddex.abc))
+(expect "pair does not exist yet" false
+  (pair-exists kaddex.abc coin))
+
+;; test governance on create-pair
+(expect
+  "create pair succeeds without governance"
+  {"key": (get-pair-key coin kaddex.abc), "account": (create-pair-account (get-pair-key coin kaddex.abc) "")}
+  (create-pair coin kaddex.abc "")
+)
+
+(env-keys ["kaddex-admin"])
+
+(expect-failure
+  "Pair already exists"
+  (create-pair coin kaddex.abc ""))
+(create-pair coin kaddex.xyz "")
+(expect "create-pair (2) events" ;; TODO reverse
+  [ { "name": "kaddex.exchange.CREATE_PAIR"
+    , "params": [ coin kaddex.abc "coin:kaddex.abc"
+                  (at 'account (get-pair kaddex.abc coin))]
+    , "module-hash": (at 'hash (describe-module "kaddex.exchange"))
+    }
+    { "name": "kaddex.exchange.CREATE_PAIR"
+    , "params": [ coin kaddex.xyz "coin:kaddex.xyz"
+                  (at 'account (get-pair kaddex.xyz coin))]
+    , "module-hash": (at 'hash (describe-module "kaddex.exchange"))
+    }
+  ]
+  (env-events true))
+
+(env-data
+  { 'bob: ["bob"]
+  , 'alice: ["alice"]
+  })
+
+(test-capability (coin.COINBASE))
+(coin.coinbase "Bob" (read-keyset 'bob) 1000.0)
+(kaddex.abc.create-account "Bob" (read-keyset 'bob))
+(kaddex.abc.fund "Bob" 2000.0)
+(kaddex.xyz.create-account "Bob" (read-keyset 'bob))
+(kaddex.xyz.fund "Bob" 600.0)
+(coin.coinbase "Alice" (read-keyset 'alice) 10000.0)
+(kaddex.abc.create-account "Alice" (read-keyset 'alice))
+(kaddex.abc.fund "Alice" 20000.0)
+(commit-tx)
+
+
+;; test private cap on update-supply
+(begin-tx)
+(expect-failure "update-supply private"
+  "require-capability: not granted: (kaddex.tokens.UPDATE_SUPPLY)"
+  (kaddex.tokens.update-supply
+    (at 'account (kaddex.exchange.get-pair kaddex.abc coin)) 10.0))
+(rollback-tx)
+
+
+
+;;
+;; add-liquidity
+;;
+(begin-tx)
+(use kaddex.exchange)
+
+(env-sigs [
+  { 'key: "bob"
+  , 'caps:
+    [(coin.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 10.0)
+     (kaddex.abc.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 40.0)
+    ]
+  }])
+
+(expect "add-liquidity"
+  { "liquidity": 19.9
+  , "supply": 20.0
+  , "amount0": 10.0
+  , "amount1": 40.0 }
+  (add-liquidity
+    coin
+    kaddex.abc
+    10.0
+    40.0
+    10.0
+    40.0
+    "Bob"
+    "Bob"
+    (read-keyset 'bob)
+    ))
+
+(expect "add-liquidity events"
+  [ { "name": "coin.TRANSFER"
+    , "params": ["Bob" (at 'account (get-pair kaddex.abc coin)) 10.0]
+    , "module-hash": (at 'hash (describe-module "coin"))
+    }
+    { "name": "kaddex.abc.TRANSFER"
+    , "params": ["Bob" (at 'account (get-pair kaddex.abc coin)) 40.0]
+    , "module-hash": (at 'hash (describe-module "kaddex.abc"))
+    }
+    { "name": "kaddex.tokens.MINT"
+    , "params": [ (get-pair-key coin kaddex.abc)
+                  (kaddex.exchange.get-lock-account-principal (get-pair-key coin kaddex.abc)) 0.1]
+    , "module-hash": (at 'hash (describe-module "kaddex.tokens"))
+    }
+    { "name": "kaddex.tokens.MINT"
+    , "params": [(get-pair-key coin kaddex.abc) "Bob" 19.9]
+    , "module-hash": (at 'hash (describe-module "kaddex.tokens"))
+    }
+    { "name": "kaddex.exchange.UPDATE"
+    , "params": [(get-pair-key coin kaddex.abc) 10.0 40.0]
+    , "module-hash": (at 'hash (describe-module "kaddex.exchange"))
+    }
+  ]
+  (env-events true))
+
+(expect "token liquidity for bob"
+  19.9
+  (kaddex.tokens.get-balance (get-pair-key coin kaddex.abc) "Bob")
+)
+(expect "minimum liquidity locked"
+  MINIMUM_LIQUIDITY
+  (kaddex.tokens.get-balance (get-pair-key coin kaddex.abc) (kaddex.exchange.get-lock-account-principal (get-pair-key coin kaddex.abc)))
+)
+(expect "total supply for pair token"
+  20.0
+  (kaddex.tokens.total-supply (get-pair-key coin kaddex.abc))
+)
+(expect "kda debited for bob"
+  990.0 (coin.get-balance "Bob"))
+(expect "abc debited for bob"
+  1960.0 (kaddex.abc.get-balance "Bob"))
+(expect "kda credited for pair"
+  10.0 (coin.get-balance (at 'account (get-pair coin kaddex.abc))))
+(expect "abc credited for pair"
+  40.0 (kaddex.abc.get-balance (at 'account (get-pair coin kaddex.abc))))
+
+(rollback-tx)
+
+
+(begin-tx)
+(use kaddex.exchange)
+
+(env-sigs [
+  { 'key: "bob"
+  , 'caps:
+    [(coin.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 20.0)
+     (kaddex.abc.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) 80.0)
+    ]
+  }])
+
+(expect-failure
+  "add-liquidity precision enforcement, user-supplied, A"
+  (add-liquidity
+    coin
+    kaddex.abc
+    8.9999999999999
+    33.00
+    10.0
+    40.0
+    "Bob"
+    "Bob"
+    (read-keyset 'bob)
+    ))
+
+(expect-failure
+  "add-liquidity precision enforcement, user-supplied, B"
+  (add-liquidity
+    coin
+    kaddex.abc
+    9.0
+    33.33333333333333333
+    10.0
+    40.0
+    "Bob"
+    "Bob"
+    (read-keyset 'bob)
+    ))
+
+  (expect
+    "add-liquidity precision handling, setup compute"
+    {"liquidity": 17.133687939614
+    ,"supply": 17.233687939614
+    ,"amount0": 9.0
+    ,"amount1": 33.0 }
+    (add-liquidity
+      coin
+      kaddex.abc
+      9.0
+      33.00
+      10.0
+      40.0
+      "Bob"
+      "Bob"
+      (read-keyset 'bob)
+      ))
+
+  (expect "add-liquidity precision handling, computed"
+    { "liquidity": 16.711454971745
+    , "supply": 33.945142911359
+    , "amount0": 8.727272727272
+    , "amount1": 32.0 }
+    (add-liquidity
+      coin
+      kaddex.abc
+      9.0 ;; computes 8.727272...
+      32.0
+      1.0
+      1.0
+      "Bob"
+      "Bob"
+      (read-keyset 'bob)
+      ))
+;;
+;; fixture
+;;
+
+(begin-tx)
+(use kaddex.exchange)
+
+(env-enable-repl-natives true)
+
+(module fixture G
+  (defcap G () true)
+  (defun setup-abc (amount0:decimal amount1:decimal)
+    (env-sigs
+      [ { 'key: "bob"
+        , 'caps:
+          [ (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) amount0)
+            (kaddex.abc.TRANSFER "Bob" (at 'account (get-pair kaddex.abc coin)) amount1)
+          ]}])
+    (with-applied-env
+      (add-liquidity coin kaddex.abc
+        amount0 amount1 amount0 amount1
+        "Bob" "Bob" (read-keyset "bob")
+        ))
+    (env-events true)
+  )
+
+  (defun setup-xyz (amount0:decimal amount1:decimal)
+    (env-sigs
+      [ { 'key: "bob"
+        , 'caps:
+          [ (coin.TRANSFER "Bob" (at 'account (get-pair kaddex.xyz coin)) 10.0)
+            (kaddex.xyz.TRANSFER "Bob" (at 'account (get-pair kaddex.xyz coin)) 40.0)
+          ]}])
+    (with-applied-env
+      (add-liquidity coin kaddex.xyz
+        amount0 amount1 amount0 amount1
+        "Bob" "Bob" (read-keyset "bob")
+        ))
+    (env-events true)
+  )
+
+)
+(commit-tx)
+
+;;
+;; remove-liquidity
+;;
+
+(begin-tx)
+(use kaddex.exchange)
+(fixture.setup-abc 30.0 30.0)
+
+(env-sigs [
+  { 'key: "bob"
+  , 'caps:
+    [(kaddex.tokens.TRANSFER
+      (get-pair-key coin kaddex.abc)
+      "Bob"
+      (at 'account (get-pair coin kaddex.abc))
+      141.321356237309)
+    ]}])
+(expect "remove-liquidity result"
+  { "amount0": 29.9
+  , "amount1": 29.9 }
+  (remove-liquidity kaddex.abc coin
+    29.9
+    29.9
+    29.9
+    "Bob"
+    "Bob"
+    (read-keyset 'bob)
+    ))
+
+(expect "remove-liquidity events" ;; TODO reverse
+  [ { "name": "kaddex.tokens.TRANSFER"
+    , "params": [ (get-pair-key coin kaddex.abc) "Bob"
+                  (at 'account (get-pair coin kaddex.abc)) 29.9]
+    , "module-hash": (at 'hash (describe-module "kaddex.tokens"))
+    }
+    { "name": "kaddex.tokens.BURN"
+    , "params": [ (get-pair-key coin kaddex.abc)
+                  (at 'account (get-pair coin kaddex.abc)) 29.9]
+    , "module-hash": (at 'hash (describe-module "kaddex.tokens"))
+    }
+    { "name": "coin.TRANSFER"
+    , "params": [(at 'account (get-pair coin kaddex.abc)) "Bob" 29.9]
+    , "module-hash": (at 'hash (describe-module "coin"))
+    }
+    { "name": "kaddex.abc.TRANSFER"
+    , "params": [(at 'account (get-pair coin kaddex.abc)) "Bob" 29.9]
+    , "module-hash": (at 'hash (describe-module "kaddex.abc"))
+    }
+    { "name": "kaddex.exchange.UPDATE"
+    , "params": [(get-pair-key coin kaddex.abc) 0.1 0.1]
+    , "module-hash": (at 'hash (describe-module "kaddex.exchange"))
+  } ]
+  (env-events true))
+
+(expect "token liquidity for bob"
+  0.0
+  (kaddex.tokens.get-balance (get-pair-key coin kaddex.abc) "Bob")
+)
+(expect "minimum liquidity locked"
+  MINIMUM_LIQUIDITY
+  (kaddex.tokens.get-balance (get-pair-key coin kaddex.abc) (kaddex.exchange.get-lock-account-principal (get-pair-key coin kaddex.abc)))
+)
+(expect "total supply for pair at minimum"
+  MINIMUM_LIQUIDITY
+  (kaddex.tokens.total-supply (get-pair-key coin kaddex.abc))
+)
+(expect "kda credited for bob"
+  999.9 (coin.get-balance "Bob"))
+(expect "abc credited for bob"
+  1999.9 (kaddex.abc.get-balance "Bob"))
+(expect "kda debited for pair"
+  0.1 (coin.get-balance (at 'account (get-pair coin kaddex.abc))))
+(expect "abc debited for pair"
+  0.1 (kaddex.abc.get-balance (at 'account (get-pair coin kaddex.abc))))
+
+(rollback-tx)
+
+(begin-tx)
+(use kaddex.exchange)
+(fixture.setup-abc 30.0 30.0)
+(expect-failure "remove-liquidity insufficient A"
+  "insufficient A amount"
+  (remove-liquidity kaddex.abc coin
+    29.9
+    30.0
+    29.9
+    "Bob"
+    "Bob"
+    (read-keyset 'bob)
+    ))
+
+(rollback-tx)
+
+(begin-tx)
+(use kaddex.exchange)
+(fixture.setup-abc 30.0 30.0)
+(expect-failure "remove-liquidity insufficient B"
+  "insufficient B amount"
+  (remove-liquidity kaddex.abc coin
+    29.9
+    29.9
+    30.0
+    "Bob"
+    "Bob"
+    (read-keyset 'bob)
+    ))
+
+(rollback-tx)
+
+(begin-tx)
+(use kaddex.exchange)
+(fixture.setup-abc 30.0 30.0)
+(expect-failure "remove-liquidity enforce user precision"
+  "precision violation" ;; from kaddex.tokens
+  (remove-liquidity kaddex.abc coin
+    29.999999999999999999
+    29.9
+    30.0
+    "Bob"
+    "Bob"
+    (read-keyset 'bob)
+    ))
+
+(rollback-tx)
+
+(begin-tx)
+(use kaddex.exchange)
+(fixture.setup-abc 9.0 33.0)
+(expect "remove-liquidity handle computed precision"
+  { "amount0": 0.220503975941  ;; would be 0.22050397594156010548...
+  , "amount1": 0.80851457845238 }
+  (remove-liquidity kaddex.abc coin
+    0.422232967869
+    0.01
+    0.01
+    "Bob"
+    "Bob"
+    (read-keyset 'bob)
+    ))
+;;
+;; swaps
+;;
+
+
+;;
+;; single-leg swap tests
+;;
+
+(begin-tx)
+(use kaddex.exchange)
+(module swaps G
+  (defcap G () true)
+
+  (defun swap-test-case
+    ( swapAmount:decimal
+      token0Amount:decimal
+      token1Amount:decimal
+      expectedOutputAmount:decimal
+    )
+    (fixture.setup-abc token0Amount token1Amount)
+    (env-sigs [
+      { 'key: "alice"
+      , 'caps:
+        [ (coin.TRANSFER "Alice"
+          (at 'account (get-pair kaddex.abc coin))
+          swapAmount)
+        ]}])
+    (with-applied-env
+      (coin.transfer "Alice"
+        (at 'account (get-pair kaddex.abc coin))
+        swapAmount))
+    (swap kaddex.noop-callable
+      "Alice"
+      (read-keyset "alice")
+      kaddex.abc
+      expectedOutputAmount
+      coin)
+  )
+
+  (defun optimistic-test-case
+    ( outputAmount:decimal
+      token0Amount:decimal
+      token1Amount:decimal
+      inputAmount:decimal
+    )
+    (fixture.setup-abc token0Amount token1Amount)
+    (env-sigs [
+      { 'key: "alice"
+      , 'caps:
+        [ (coin.TRANSFER "Alice"
+          (at 'account (get-pair kaddex.abc coin))
+          inputAmount)
+        ]}])
+    (with-applied-env
+      (coin.transfer "Alice"
+        (at 'account (get-pair kaddex.abc coin))
+        inputAmount))
+    (swap kaddex.noop-callable
+      "Alice"
+      (read-keyset "alice")
+      coin
+      outputAmount
+      kaddex.abc)
+  )
+)
+
+(commit-tx)
+
+(begin-tx)
+(swaps.swap-test-case 1.0 5.0 10.0 1.66249791562447)
+(begin-tx)
+(expect-failure "swap test 1" "K"
+ (swaps.swap-test-case 1.0 5.0 10.0 1.66249791562448))
+
+(begin-tx)
+(swaps.swap-test-case 1.0 10.0 5.0 0.45330544694007)
+(begin-tx)
+(expect-failure "swap test 2" "K"
+ (swaps.swap-test-case 1.0 10.0 5.0 0.45330544694008))
+
+(begin-tx)
+(swaps.swap-test-case 2.0 5.0 10.0 2.85101515584786)
+(begin-tx)
+(expect-failure "swap test 3" "K"
+ (swaps.swap-test-case 2.0 5.0 10.0 2.85101515584787))
+
+(begin-tx)
+(swaps.swap-test-case 2.0 10.0 5.0 0.831248957812)
+(begin-tx)
+(expect-failure "swap test 4" "K"
+ (swaps.swap-test-case 2.0 10.0 5.0 0.831248957813))
+
+(begin-tx)
+(swaps.swap-test-case 1.0 10.0 10.0 0.906610893880)
+(begin-tx)
+(expect-failure "swap test 5" "K"
+ (swaps.swap-test-case 1.0 10.0 10.0 0.906610893881))
+
+(begin-tx)
+(swaps.swap-test-case 1.0 100.0 100.0 0.987158034397)
+(begin-tx)
+(expect-failure "swap test 6" "K"
+ (swaps.swap-test-case 1.0 100.0 100.0 0.987158034398))
+
+(begin-tx)
+(swaps.swap-test-case 1.0 1000.0 1000.0 0.996006981039)
+(begin-tx)
+(expect-failure "swap test 7" "K"
+ (swaps.swap-test-case 1.0 1000.0 1000.0 0.996006981040))
+
+(begin-tx)
+(swaps.optimistic-test-case 0.997 5.0 10.0 1.0)
+(begin-tx)
+(expect-failure "optimistic test 1" "K"
+ (swaps.optimistic-test-case 0.997000000001 5.0 10.0 1.0))
+
+(begin-tx)
+(swaps.optimistic-test-case 0.997 10.0 5.0 1.0)
+(begin-tx)
+(expect-failure "optimistic test 2" "K"
+ (swaps.optimistic-test-case 0.997000000001 10.0 5.0 1.0))
+
+(begin-tx)
+(swaps.optimistic-test-case 0.997 5.0 5.0 1.0)
+(begin-tx)
+(expect-failure "optimistic test 2" "K"
+ (swaps.optimistic-test-case 0.997000000001 5.0 5.0 1.0))
+
+(begin-tx)
+(swaps.optimistic-test-case 1.0 5.0 5.0 1.003009027082)
+;; TODO floor instead of round? old val 1.003009027081
+(begin-tx)
+(expect-failure "optimistic test 2" "K"
+ (swaps.optimistic-test-case 1.000000000001 5.0 5.0 1.003009027082))
+
+;;
+;; swap-exact-in
+;;
+
+(begin-tx)
+(use kaddex.exchange)
+(fixture.setup-abc 30.0 30.0)
+
+(env-sigs [
+  { 'key: "alice"
+  , 'caps:
+    [(coin.TRANSFER "Alice" (at 'account (get-pair kaddex.abc coin)) 100.0)]
+  }])
+
+(env-gasmodel 'table)
+(env-gaslimit 30000)
+(expect "swap exact in"
+  [ { "token": "coin", "amount": 8.0 }
+    { "token": "kaddex.abc", "amount": 6.30082157151885 }
+  ]
+  (swap-exact-in 8.0 6.3 [coin kaddex.abc]
+    "Alice" "Alice" (read-keyset 'alice) ))
+;(expect "swap gas" 1663 (env-gas))
+(env-gasmodel 'fixed 0)
+
+(expect "kda debited for alice"
+  9992.0 (coin.get-balance "Alice"))
+(expect "abc credited for alice"
+  20006.30082157151885 (kaddex.abc.get-balance "Alice"))
+(expect "kda credited for pair"
+  38.0 (coin.get-balance (at 'account (get-pair coin kaddex.abc))))
+(expect "abc debited for pair"
+  23.69917842848115
+  (kaddex.abc.get-balance (at 'account (get-pair coin kaddex.abc))))
+
+(expect "swap-exact-in events"
+  [ { "module-hash": (at 'hash (describe-module "coin"))
+    , "name": "coin.TRANSFER"
+    , "params": ["Alice" (at 'account (get-pair kaddex.abc coin)) 8.0]
+    }
+    { "module-hash": (at 'hash (describe-module "kaddex.abc"))
+    , "name": "kaddex.abc.TRANSFER"
+    , "params": [ (at 'account (get-pair kaddex.abc coin))
+                  "Alice" 6.30082157151885]
+    }
+    { "module-hash": (at 'hash (describe-module "kaddex.exchange"))
+    , "name": "kaddex.exchange.UPDATE"
+    , "params": [ (get-pair-key coin kaddex.abc)
+                  38.0 23.69917842848115]
+    }
+    { "module-hash": (at 'hash (describe-module "kaddex.exchange"))
+    , "name": "kaddex.exchange.SWAP"
+    , "params": [ (at 'account (get-pair kaddex.abc coin))
+                  "Alice" 8.0 coin 6.30082157151885 kaddex.abc]
+    }
+  ]
+  (env-events true))
+(rollback-tx)
+
+;; 3-way swap
+
+(begin-tx)
+(use kaddex.exchange)
+(fixture.setup-abc 30.0 30.0)
+(fixture.setup-xyz 10.0 40.0)
+
+
+(env-sigs [
+  { 'key: "alice"
+  , 'caps:
+    [(kaddex.abc.TRANSFER "Alice" (at 'account (get-pair kaddex.abc coin)) 30.0)
+    ]
+  }])
+
+(expect "swap exact in 3-way"
+  [ { "token": "kaddex.abc", "amount": 8.0}
+    { "token": "coin", "amount": 6.300821571518}
+    { "token": "kaddex.xyz", "amount": 15.43287143388036}
+  ]
+  (swap-exact-in 8.0 15.4 [kaddex.abc coin kaddex.xyz]
+    "Alice" "Alice" (read-keyset 'alice) ))
+
+(expect "abc debited for alice"
+  19992.0 (kaddex.abc.get-balance "Alice"))
+(expect "abc credited for coin:abc"
+  38.0
+  (kaddex.abc.get-balance (at 'account (get-pair coin kaddex.abc))))
+(expect "kda debited for coin:abc"
+  23.699178428482
+  (coin.get-balance (at 'account (get-pair coin kaddex.abc))))
+(expect "kda credited for coin:xyz"
+  16.300821571518
+  (coin.get-balance (at 'account (get-pair coin kaddex.xyz))))
+(expect "xyz debited for coin:xyz"
+  24.56712856611964
+  (kaddex.xyz.get-balance (at 'account (get-pair coin kaddex.xyz))))
+(expect "xyz credited for alice"
+  15.43287143388036 (kaddex.xyz.get-balance "Alice"))
+
+(expect "swap-exact-in 3-way events"
+  [ { "module-hash": (at 'hash (describe-module "kaddex.abc"))
+    , "name": "kaddex.abc.TRANSFER"
+    , "params": ["Alice" (at 'account (get-pair kaddex.abc coin)) 8.0]
+    }
+    { "module-hash": (at 'hash (describe-module "coin"))
+    , "name": "coin.TRANSFER"
+    , "params": [ (at 'account (get-pair kaddex.abc coin))
+                  (at 'account (get-pair kaddex.xyz coin)) 6.300821571518]
+    }
+    { "module-hash": (at 'hash (describe-module "kaddex.exchange"))
+    , "name": "kaddex.exchange.UPDATE"
+    , "params": [ (get-pair-key coin kaddex.abc)
+                  23.699178428482 38.0]
+    }
+    { "module-hash": (at 'hash (describe-module "kaddex.exchange"))
+    , "name": "kaddex.exchange.SWAP"
+    , "params": [ (at 'account (get-pair kaddex.abc coin))
+                  (at 'account (get-pair kaddex.xyz coin))
+                  8.0 kaddex.abc 6.300821571518 coin]
+    }
+    { "module-hash": (at 'hash (describe-module "kaddex.xyz"))
+    , "name": "kaddex.xyz.TRANSFER"
+    , "params": [ (at 'account (get-pair kaddex.xyz coin))
+                  "Alice" 15.43287143388036]
+    }
+    { "module-hash": (at 'hash (describe-module "kaddex.exchange"))
+    , "name": "kaddex.exchange.UPDATE"
+    , "params": [ (get-pair-key coin kaddex.xyz)
+                  16.300821571518 24.56712856611964]
+    }
+    { "module-hash": (at 'hash (describe-module "kaddex.exchange"))
+    , "name": "kaddex.exchange.SWAP"
+    , "params": [ (at 'account (get-pair kaddex.xyz coin)) "Alice"
+                  6.300821571518 coin 15.43287143388036 kaddex.xyz]
+    }
+  ]
+  (env-events true))
+
+(rollback-tx)
+
+;;
+;;
+;; compute-in tests
+;;
+
+(begin-tx)
+(use kaddex.exchange)
+(fixture.setup-abc 1000.0 1000.0)
+
+(expect "compute-in"
+ [ 0.001003010031 0.001 ]
+ (map (at 'in)
+  (compute-in
+    [ { 'token-out: coin
+      , 'token-in: kaddex.abc
+      , 'out: 0.0
+      , 'in: 0.001
+      , 'idx: 2
+      , 'pair: (get-pair coin kaddex.abc)
+      , 'path: []
+      }] coin)))
+
+;;
+;; swap-exact-out
+;;
+
+(begin-tx)
+(use kaddex.exchange)
+(fixture.setup-abc 1000.0 1000.0)
+
+(env-sigs [
+  { 'key: "alice"
+  , 'caps:
+    [(coin.TRANSFER "Alice" (at 'account (get-pair kaddex.abc coin)) 100.0)
+    ]
+  }])
+
+(expect "swap exact out"
+  [ { "token": "coin", "amount": 0.001003010031 }
+    { "token": "kaddex.abc", "amount": 0.001 }
+  ]
+  (swap-exact-out 0.001 0.002 [coin kaddex.abc]
+    "Alice" "Alice" (read-keyset 'alice) ))
+(expect "kda debited for alice"
+  9999.998996989969 (coin.get-balance "Alice"))
+(expect "abc credited for alice"
+  20000.001 (kaddex.abc.get-balance "Alice"))
+(expect "kda credited for pair"
+  1000.001003010031 (coin.get-balance (at 'account (get-pair coin kaddex.abc))))
+(expect "abc debited for pair"
+  999.999
+  (kaddex.abc.get-balance (at 'account (get-pair coin kaddex.abc))))
+
+(rollback-tx)
+
+;; 3-way out
+
+(begin-tx)
+(use kaddex.exchange)
+(fixture.setup-abc 30.0 30.0)
+(fixture.setup-xyz 10.0 40.0)
+
+(env-sigs [
+  { 'key: "alice"
+  , 'caps:
+    [(kaddex.abc.TRANSFER "Alice" (at 'account (get-pair kaddex.abc coin))
+      28.78004347733101)]}])
+
+(expect "swap exact out 3-way TODO"
+  [ { "token": "kaddex.abc", "amount": 7.55088351629628 }
+   { "token": "coin", "amount": 6.018054162488 }
+   { "token": "kaddex.xyz", "amount": 15.0 }
+  ]
+  (kaddex.exchange.swap-exact-out 15.0 100.0 [kaddex.abc coin kaddex.xyz]
+    "Alice" "Alice" (read-keyset 'alice) ))
+
+
+(expect "abc debited for alice"
+  19992.44911648370372 (kaddex.abc.get-balance "Alice"))
+(expect "abc credited for coin:abc"
+  37.55088351629628
+  (kaddex.abc.get-balance (at 'account (get-pair coin kaddex.abc))))
+(expect "kda debited for coin:abc"
+  23.981945837512
+  (coin.get-balance (at 'account (get-pair coin kaddex.abc))))
+(expect "kda credited for coin:xyz"
+  16.018054162488
+  (coin.get-balance (at 'account (get-pair coin kaddex.xyz))))
+(expect "xyz debited for coin:xyz"
+  25.0
+  (kaddex.xyz.get-balance (at 'account (get-pair coin kaddex.xyz))))
+(expect "xyz credited for alice TODO"
+  15.0
+  (kaddex.xyz.get-balance "Alice"))
+
+(rollback-tx)
+
+;;
+;; test callback
+;;
+(begin-tx)
+
+(module optimistic-transfer G
+  (defcap G () true)
+  (implements kaddex.swap-callable-v1)
+  (defun swap-call:bool
+    ( token-in:module{fungible-v2}
+      token-out:module{fungible-v2}
+      amount-out:decimal
+      sender:string
+      recipient:string
+      recipient-guard:guard
+    )
+    (coin.transfer recipient sender 8.0)
+    true
+  )
+)
+
+(commit-tx)
+
+(begin-tx)
+(use kaddex.exchange)
+(fixture.setup-abc 30.0 30.0)
+
+
+(env-sigs [
+  { 'key: "alice"
+  , 'caps:
+    [(coin.TRANSFER "Alice"
+     (at 'account (get-pair kaddex.abc coin))
+      8.0)]}])
+
+(expect "swap+callback success"
+  { "token": "kaddex.abc"
+  , "amount": 6.30082157151885
+  }
+  (swap
+  optimistic-transfer
+  "Alice" (read-keyset 'alice)
+  kaddex.abc 6.30082157151885
+  coin))
+
+(expect "callback events"
+  [ { "module-hash": (at 'hash (describe-module "kaddex.abc"))
+    , "name": "kaddex.abc.TRANSFER"
+    , "params": [ (at 'account (get-pair coin kaddex.abc)) "Alice"
+                  6.30082157151885]
+    }
+    { "module-hash": (at 'hash (describe-module "coin"))
+    ,"name": "coin.TRANSFER"
+    ,"params": ["Alice" (at 'account (get-pair coin kaddex.abc)) 8.0]
+    }
+    { "module-hash": (at 'hash (describe-module "kaddex.exchange"))
+    , "name": "kaddex.exchange.UPDATE"
+    , "params": ["coin:kaddex.abc" 38.0 23.69917842848115]
+    }
+    { "module-hash": (at 'hash (describe-module "kaddex.exchange"))
+    ,"name": "kaddex.exchange.SWAP"
+    ,"params": [ (at 'account (get-pair coin kaddex.abc)) "Alice"
+                 8.0 coin 6.30082157151885 kaddex.abc]
+    }
+    ]
+  (env-events true))
+
+(rollback-tx)
+
+(begin-tx)
+(use kaddex.exchange)
+(fixture.setup-abc 30.0 30.0)
+
+
+(env-sigs [
+  { 'key: "alice"
+  , 'caps:
+    [(coin.TRANSFER "Alice"
+     (at 'account (get-pair kaddex.abc coin))
+      8.0)]}])
+
+(expect-failure "swap+callback failure"
+  "K"
+  (swap
+  optimistic-transfer
+  "Alice" (read-keyset 'alice)
+  kaddex.abc 6.30082157151886
+  coin))
+(rollback-tx)
+
+(begin-tx "check guarded fees")
+;;(map (compose (read kaddex.exchange.pairs) (at 'account)) (keys kaddex.exchange.pairs))
+(module fixture-second G
+  (use kaddex.exchange)
+
+  (defcap G () true)
+
+  (defun mark-fee-acc (pair-key:string fee-account-name:string account:object)
+      { 'is-fee-account: (= (at 'account account) fee-account-name)
+      , 'pair: pair-key
+      , 'name: (at 'account account)
+      , 'liquidity-tokens: (at 'balance account)})
+
+  (defun show-liquidity-and-fees
+    (pair-key:string)
+    (let*
+      ( (pair (read kaddex.exchange.pairs pair-key))
+        (account (at 'account pair))
+      )
+      (map (mark-fee-acc pair-key account) (select kaddex.tokens.ledger (where 'token (= pair-key))))
+    )
+  )
+
+  (defun show-all-liquidity ()
+    (map (show-liquidity-and-fees) (keys kaddex.exchange.pairs))
+  )
+)
+(commit-tx)
+
+(begin-tx)
+(use kaddex.exchange)
+
+(env-keys ['kaddex-admin 'kaddex-ops 'operate])
+
+(test-capability (kaddex.exchange.GOVERNANCE))
+(test-capability (kaddex.tokens.GOVERNANCE))
+
+;(with-applied-env (fixture-second.show-liquidity-and-fees (kaddex.exchange.get-pair-key coin kaddex.abc)))
+(with-applied-env (fixture-second.show-all-liquidity))
+
+(kaddex.exchange.mint-fee-manual "coin:kaddex.abc")
+
+(commit-tx)
