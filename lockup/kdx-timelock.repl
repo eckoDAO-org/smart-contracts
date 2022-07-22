@@ -9,12 +9,11 @@
   , 'kaddex-ns-admin: ["kaddex-admin"]
   , 'kaddex-ns-user: ["kaddex-user"]
   , 'ns: "kaddex"
-  , 'upgrade: false
-  , 'dummy-token-supply: 100000.0 })
+  , 'upgrade: false })
 
 (env-keys ["kaddex-keyset", "kaddex-ops", "kaddex-admin", "kaddex-user"])
 (define-keyset 'kaddex-ops)
-(load "dummy-token.pact")
+
 (load "kdx-sale.pact")
 (load "kdx-timelock.pact")
 
@@ -44,12 +43,6 @@
 (coin.coinbase "bob" (read-keyset 'bob) 1000.0)
 (coin.coinbase "alice" (read-keyset 'alice) 10000.0)
 (coin.coinbase kaddex.time-lock.KDX_BANK (kaddex.time-lock.kdx-bank-guard) 100000.0)
-
-(env-sigs
-  [ { 'key: 'kaddex-admin
-    , 'caps: [ (kaddex.dummy-token.TRANSFER kaddex.dummy-token.ISSUANCE_ACCOUNT kaddex.time-lock.KDX_BANK 100000.0) ]}])
-(with-applied-env
-  (kaddex.dummy-token.transfer kaddex.dummy-token.ISSUANCE_ACCOUNT kaddex.time-lock.KDX_BANK 100000.0))
 
 (env-sigs
   [ { 'key: 'kaddex-admin
@@ -193,8 +186,8 @@
 
 (env-keys ['kaddex-ops])
 
-(kaddex.priv-sale.approve-all)
-(kaddex.priv-sale.end-sale)
+;(kaddex.priv-sale.approve-all)
+;(kaddex.priv-sale.end-sale)
 
 (commit-tx)
 
@@ -212,16 +205,16 @@
 ; in lockup registration period
 (env-chain-data { 'block-time: (add-time kaddex.time-lock.START_TIME (days 1)) })
 (expect ""
-  "charlie requested lockup of 1400.0 KDX, with 1.400000000000 KDA and 56.000000000000 KDX returned to emily over 3 months."
+  "charlie requested lockup of 7000.0 KDX, with 1.400000000000 KDA and 280.000000000000 KDX returned to emily over 3 months."
   (fixture.lock-to-other 'charlie 'emily (read-keyset 'emily)))
 (expect ""
-  "bob requested lockup of 100.0 KDX, with 0.100000000000 KDA and 4.000000000000 KDX returned to bob over 3 months."
+  "bob requested lockup of 500.0 KDX, with 0.100000000000 KDA and 20.000000000000 KDX returned to bob over 3 months."
   (fixture.lock 'bob "3 months"))
 (expect ""
-  "alice requested lockup of 900.0 KDX, with 0.900000000000 KDA and 36.000000000000 KDX returned to alice over 3 months."
+  "alice requested lockup of 4500.0 KDX, with 0.900000000000 KDA and 180.000000000000 KDX returned to alice over 3 months."
   (fixture.lock 'alice "3 months"))
 (expect ""
-  "darlene requested lockup of 500.0 KDX, with 0.000000000000 KDA and 0.000000000000 KDX returned to darlene over asap."
+  "darlene requested lockup of 2500.0 KDX, with 0.000000000000 KDA and 0.000000000000 KDX returned to darlene over asap."
   (fixture.lock 'darlene "asap"))
 
 (expect "Lockup request has not been approved" false (kaddex.time-lock.is-kdx-locked 'bob))
@@ -332,16 +325,16 @@
 
 (env-keys ['bob])
 
-(expect "Successful return claim" { "kda": 0.066666666666,"kdx": 2.666666666666 }
+(expect "Successful return claim" { "kda": 0.066666666666,"kdx": 13.333333333333 }
   (kaddex.time-lock.claim-return 'bob))
 
 (expect "bob's payout is sent to bob"
-  [{ "module-hash": (at 'hash (describe-module "kaddex.dummy-token"))
-   , "name": "kaddex.dummy-token.TRANSFER"
+  [{ "module-hash": (at 'hash (describe-module "coin"))
+   , "name": "coin.TRANSFER"
    , "params": ["kdx-lockup-reward-bank" "bob" 0.066666666666 ]}
    { "module-hash": (at 'hash (describe-module "kaddex.kdx"))
    , "name": "kaddex.kdx.TRANSFER"
-   , "params": ["kdx-lockup-reward-bank" "bob" 2.666666666666 ]}]
+   , "params": ["kdx-lockup-reward-bank" "bob" 13.333333333333 ]}]
   (env-events true))
 
 (commit-tx)
@@ -364,12 +357,12 @@
 (env-keys ['charlie])
 (kaddex.time-lock.claim-return 'charlie)
 (expect "Charlie's payout is sent to Emily"
-  [{ "module-hash": (at 'hash (describe-module "kaddex.dummy-token"))
-   , "name": "kaddex.dummy-token.TRANSFER"
+  [{ "module-hash": (at 'hash (describe-module "coin"))
+   , "name": "coin.TRANSFER"
    , "params": ["kdx-lockup-reward-bank" "emily" 0.933333333333]}
    { "module-hash": (at 'hash (describe-module "kaddex.kdx"))
    , "name": "kaddex.kdx.TRANSFER"
-   , "params": ["kdx-lockup-reward-bank" "emily" 37.333333333333]}]
+   , "params": ["kdx-lockup-reward-bank" "emily" 186.666666666666]}]
   (env-events true))
 
 ; print records post-claim
@@ -388,5 +381,60 @@
 (expect "Lockup time is up" false (kaddex.time-lock.is-kdx-locked 'bob))
 (expect "Lockup request has not been approved" false (kaddex.time-lock.is-kdx-locked 'alice))
 (expect "Never requested lockup" false (kaddex.time-lock.is-kdx-locked 'emily))
+(commit-tx)
 
+(begin-tx "KDX withdraw")
+;before lockup ends for bob
+(env-chain-data { 'block-time:
+  (add-time (at 'lockup-start-time (kaddex.time-lock.read-lockup 'bob)) (days -1)) })
+
+(env-keys ['bob])
+(expect-failure "Lickup period not ended yet"
+  (kaddex.time-lock.withdraw 'bob))
+
+; more than 3 months have passed
+(env-chain-data
+  { 'block-time:
+  (add-time (at 'lockup-start-time (kaddex.time-lock.read-lockup 'bob)) (days 91)) })
+
+(env-keys ['bob])
+(kaddex.time-lock.withdraw 'bob)
+(expect "Bob's withdraw"
+  [{ "module-hash": (at 'hash (describe-module "kaddex.time-lock"))
+   , "name": "kaddex.time-lock.WITHDRAW"
+   , "params": ["bob" 500.0]}
+   { "module-hash": (at 'hash (describe-module "kaddex.kdx"))
+   , "name": "kaddex.kdx.TRANSFER"
+   , "params": ["kdx-lockup-reward-bank" "bob" 500.0]}]
+  (env-events true))
+
+(expect-failure "KDX already withdrawn"
+  (kaddex.time-lock.withdraw 'bob))
+(commit-tx)
+
+(begin-tx "KDX withdraw asap lockup")
+; before WITHDRAW_AVAILABLE_FROM
+(env-chain-data { 'block-time:
+  (add-time (at 'lockup-end-time (kaddex.time-lock.read-lockup 'darlene)) 1) })
+
+  (env-keys ['darlene])
+  (expect-failure "Withdraw not available yet"
+    (kaddex.time-lock.withdraw 'darlene))
+
+  ; after WITHDRAW_AVAILABLE_FROM
+  (env-chain-data { 'block-time:
+    (add-time kaddex.time-lock.WITHDRAW_AVAILABLE_FROM 1) })
+
+    (kaddex.time-lock.withdraw 'darlene)
+    (expect "Darlene's withdraw"
+      [{ "module-hash": (at 'hash (describe-module "kaddex.time-lock"))
+       , "name": "kaddex.time-lock.WITHDRAW"
+       , "params": ["darlene" 2500.0]}
+       { "module-hash": (at 'hash (describe-module "kaddex.kdx"))
+       , "name": "kaddex.kdx.TRANSFER"
+       , "params": ["kdx-lockup-reward-bank" "darlene" 2500.0]}]
+      (env-events true))
+
+      (expect-failure "KDX already withdrawn"
+        (kaddex.time-lock.withdraw 'darlene))
 (commit-tx)
