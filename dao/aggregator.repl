@@ -51,13 +51,13 @@
 (begin-tx)
 
 (env-data
-  { 'kaddex-ns-admin: ["admin"]
-  , 'kaddex-ns-ops: ["operate"]
+  { 'kaddex-aggregator-admin: ["admin"]
+  , 'kaddex-aggregator-ops: ["operate"]
   , 'ns: "free"
   , 'upgrade: false})
 (env-keys ["admin", "operate"])
-(define-keyset "kaddex-ns-admin" (read-keyset "kaddex-ns-admin"))
-(define-keyset "kaddex-ns-ops" (read-keyset "kaddex-ns-ops"))
+(define-keyset "kaddex-aggregator-admin" (read-keyset "kaddex-aggregator-admin"))
+(define-keyset "kaddex-aggregator-ops" (read-keyset "kaddex-aggregator-ops"))
 (env-enable-repl-natives true) ;; enables usage of (print)
 (load "./aggregator.pact")
 
@@ -65,12 +65,12 @@
 
 (use free.aggregator)
 
-(grant-privilege (read-keyset 'kaddex-ns-ops ) "aggregate-stake")
-(grant-privilege (read-keyset 'kaddex-ns-ops ) "aggregate-unstake")
+(grant-privilege (read-keyset 'kaddex-aggregator-ops ) "aggregate-stake")
+(grant-privilege (read-keyset 'kaddex-aggregator-ops ) "aggregate-unstake")
 
 
 (env-data
-  { 'kaddex-ns-ops: ["operate"]})
+  { 'kaddex-aggregator-ops: ["operate"]})
 (env-keys ["operate"])
 
 

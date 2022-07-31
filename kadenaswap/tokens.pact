@@ -5,7 +5,7 @@
 ;; is the pair key representing which pair the liquidity tokens
 ;; are for, e.g. "coin:kaddex.kdx". Crosschain transfers are disabled.
 
-(enforce-pact-version "4.3")
+;;(enforce-pact-version "4.3")
 
 (namespace (read-msg 'ns))
 
@@ -89,7 +89,7 @@
   (defconst ISSUER_KEY "I")
 
   (defcap GOVERNANCE ()
-    (enforce-guard (keyset-ref-guard 'kaddex-ns-admin)))
+    (enforce-guard (keyset-ref-guard 'kaddex-exchange-admin)))
 
   (defcap DEBIT (token:string sender:string)
     (enforce-guard

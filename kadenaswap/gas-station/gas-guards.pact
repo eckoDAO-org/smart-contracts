@@ -2,17 +2,17 @@
 
 (namespace 'kaddex)
 
-(module gas-guards 'kaddex-ns-admin
-  "************************WARNING************************\
-  \ This module is currently governed by 'kaddex-ns-admin   \
-  \ and should not be in use until the governance is      \
-  \ replaced with AUTONOMOUS, meaning that the module     \
-  \ will be non-upgradable.                               \
-  \ ******************************************************\
+(module gas-guards GOVERNANCE
+  "************************WARNING******************************\
+  \ This module is currently governed by 'kaddex-exchange-admin \
+  \ and should not be in use by others until the governance is  \
+  \ replaced with AUTONOMOUS, meaning that the module           \
+  \ will be non-upgradable.                                     \
+  \ ************************************************************\
   \ Functions for implementing gas guards."
 
-;  (defcap AUTONOMOUS ()
-;    (enforce false "Non-upgradeable")) ;; TODO: do want to add this back before deploying to mainnet?
+  (defcap GOVERNANCE ()
+      (enforce-guard (keyset-ref-guard 'kaddex-gas-admin)))
 
   (defun guard-all:guard (guards:[guard])
     "Create a guard that only succeeds if every guard in GUARDS is successfully enforced."

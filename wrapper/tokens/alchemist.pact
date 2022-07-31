@@ -10,10 +10,10 @@
 
 (module alchemist GOVERNANCE
   (defcap GOVERNANCE ()
-    (enforce-keyset 'kaddex-ns-admin))
+    (enforce-keyset 'kaddex-alchemist-admin))
 
   (defcap OPS ()
-    (enforce-keyset 'kaddex-ops-keyset))
+    (enforce-keyset 'kaddex-alchemist-ops))
 
   ;; this is a simple global lock that can be toggled by the operators to pause the contract if necessary
   (defschema contract-lock-status
@@ -155,24 +155,25 @@
       to-guard:guard
     )
     ;; Enforce wrapping privilege and emit event
-    (let ((target-token-name (format "{}" [target-token])))
+    (let ((target-token-name (format-token target-token)))
       (with-capability (WRAP target-token amount from to)
         (with-read prefixes target-token-name
           { 'token := target-module:module{fungible-v2,supply-control-v1}
           , 'held := held
           , 'account := holding-account }
-          (enforce (= target-token target-module) "Token mismatch")
+          (enforce (= (format-token target-token) (format-token target-module)) "Token mismatch")
           (let*
-            ( (base-token:module{fungible-v2,special-accounts-v2} (get-base-token))
+            ( (base-token:module{fungible-v2,special-accounts-v1} (get-base-token))
               (start-supply (target-module::total-supply))
               (expected-supply (+ start-supply amount))
               (other-prefixes (filter (!= target-token) (list-prefixes)))
               (other-supplies (map
                 (lambda (token:module{supply-control-v1})
-                  { 'token: token
-                  , 'supply: (token::total-supply)
-                  , 'held-record: (at 'held (read prefixes (format "{}" [token])))
-                  , 'held-balance: (base-token::get-balance (base-token::resolve-special token)) }) other-prefixes))
+                  (let ((token-key (format "{}" [token])))
+                    { 'token: token
+                    , 'supply: (token::total-supply)
+                    , 'held-record: (at 'held (read prefixes token-key))
+                    , 'held-balance: (base-token::get-balance (base-token::resolve-special token-key)) })) other-prefixes))
             )
             ;; Halt wrapping if reserves no longer back tokens
             (enforce (= start-supply held)
@@ -185,9 +186,9 @@
               ]) other-supplies)
 
             ;; Take custody of amount base token
-            (install-capability (base-token::WRAP target-token from to amount))
-            (with-capability (RESERVE_ACCESS (format-token target-token))
-              (base-token::wrap-transfer target-token from to amount))
+            (let ((type (format-token target-token)))
+              (with-capability (RESERVE_ACCESS type)
+                (base-token::wrap-transfer type from to amount)))
 
             ;; Mint <amount> target-token
             (with-capability (MINTING (format-token target-token))
@@ -205,7 +206,7 @@
                   [ (enforce-impure (= (token::total-supply) (at 'held-record composite))
                       (format "{} has broken parity with base token" [token]))
                     (enforce-impure
-                      (>= (base-token::get-balance (base-token::resolve-special token))
+                      (>= (base-token::get-balance (base-token::resolve-special (format "{}" [token])))
                           (at 'held-record composite))
                       (format "{} reserves insufficient to back prefix" [(at 'token composite)]))
                   ])) other-supplies)
@@ -228,24 +229,25 @@
       to:string
       to-guard:guard)
     ;; Enforce unwrapping privilege and emit event
-    (let ((source-token-name (format "{}" [source-token])))
+    (let ((source-token-name (format-token source-token)))
       (with-capability (UNWRAP source-token amount from to)
         (with-read prefixes source-token-name
           { 'token := source-module:module{fungible-v2,supply-control-v1}
           , 'held := held
           , 'account := holding-account }
-          (enforce (= source-module source-token) "Token mismatch")
+          (enforce (= (format-token source-module) (format-token source-token)) "Token mismatch")
           (let*
-            ( (base-token:module{fungible-v2,special-accounts-v2} (get-base-token))
+            ( (base-token:module{fungible-v2,special-accounts-v1} (get-base-token))
               (start-supply (source-module::total-supply))
               (expected-supply (- start-supply amount))
               (other-prefixes (filter (!= source-token) (list-prefixes)))
               (other-supplies (map
                 (lambda (token:module{supply-control-v1})
-                  { 'token: token
-                  , 'supply: (token::total-supply)
-                  , 'held-record: (at 'held (read prefixes (format "{}" [token])))
-                  , 'held-balance: (base-token::get-balance (base-token::resolve-special token)) }) other-prefixes))
+                  (let ((token-key (format "{}" [token])))
+                    { 'token: token
+                    , 'supply: (token::total-supply)
+                    , 'held-record: (at 'held (read prefixes token-key))
+                    , 'held-balance: (base-token::get-balance (base-token::resolve-special token-key)) })) other-prefixes))
             )
             ;; Halt wrapping if reserves no longer back tokens
             (enforce (= start-supply held) (format "{} has broken parity with base token" [source-token]))
@@ -261,9 +263,9 @@
               (source-token::burn 'unwrap from amount))
 
             ;; Transfer custody of <amount> base token
-            (install-capability (base-token::UNWRAP source-token from to amount))
-            (with-capability (RESERVE_ACCESS (format-token source-token))
-              (base-token::unwrap-transfer source-token from to to-guard amount))
+            (let ((type (format-token source-token)))
+              (with-capability (RESERVE_ACCESS type)
+                (base-token::unwrap-transfer type from to to-guard amount)))
 
             (let
               ( (after-supply (source-token::total-supply))
@@ -277,7 +279,7 @@
                   [ (enforce-impure (= (token::total-supply) (at 'held-record composite))
                       (format "{} has broken parity with base token" [token]))
                     (enforce-impure
-                      (>= (base-token::get-balance (base-token::resolve-special token))
+                      (>= (base-token::get-balance (base-token::resolve-special (format "{}" [token])))
                           (at 'held-record composite))
                       (format "{} reserves insufficient to back prefix" [(at 'token composite)]))
                   ])) other-supplies)
@@ -301,10 +303,10 @@
       (let*
         ( (name (format "{}" [token]))
           (holder-account-name (hash (format "holder_{}_{}" [name hint])))
-          (base-token:module{fungible-v2,special-accounts-v2} (get-base-token))
+          (base-token:module{fungible-v2,special-accounts-v1} (get-base-token))
         )
         (base-token::create-account holder-account-name (create-reserve-guard token))
-        (base-token::assign-special token holder-account-name)
+        (base-token::assign-special name holder-account-name)
         (insert prefixes name
           { 'name: name
           , 'token: token
@@ -349,7 +351,7 @@
 (if (= (read-integer 'upgrade) 0)
     [ ;; deploying from scratch: create all tables
       (create-table contract-lock)
-      (insert contract-lock CONTRACT_LOCK_KEY {'lock: false})
+      (insert contract-lock CONTRACT_LOCK_KEY {'lock: true})
       (create-table prefixes)
       (create-table privileges)
       (create-table prefix-list)

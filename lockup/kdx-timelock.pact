@@ -36,11 +36,11 @@
 
   (defcap GOVERNANCE ()
     (enforce-guard
-      (keyset-ref-guard 'kaddex-admin)))
+      (keyset-ref-guard 'kaddex-timelock-admin)))
 
   (defcap OPS ()
     (enforce-guard
-      (keyset-ref-guard 'kaddex-ops)))
+      (keyset-ref-guard 'kaddex-timelock-ops)))
 
   (defcap LOCK
     ( reservation-account:string
@@ -49,12 +49,15 @@
     @event
     (enforce-guard (before-date END_TIME))
     (enforce-guard (at-after-date START_TIME))
+    (let ((reservation-guard (at 'guard (coin.details reservation-account))))
+      (enforce-guard reservation-guard))
   )
 
-  (defcap WITHDRAW (account:string amount:decimal)
-    "Emitted when account withdraw the initial kdx-locked"
-    @event
-    true)
+  (defcap CLAIM (reservation-account:string)
+    (let ((reservation-guard (at 'reservation-guard (read lockups reservation-account))))
+      (enforce-guard reservation-guard))
+    ; QUESTION: enforce receiver account guard or reservation guard at this point?
+  )
 
   (defcap AGGREGATOR_NOTIFY () true)
 
@@ -66,13 +69,11 @@
 
   (defconst STATUS_REJECTED:string 'rejected)
 
-  (defconst LOCKUP_INTERVAL_LENGTH:decimal (days 30))
+  (defconst LOCKUP_INTERVAL_LENGTH:decimal (days 90))
 
-  (defconst START_TIME:time (time "2022-07-25T00:00:00Z"))
+  (defconst START_TIME:time (time "2022-07-25T05:00:00Z"))
 
-  (defconst END_TIME:time (time "2022-07-30T23:59:59Z"))
-
-  (defconst WITHDRAW_AVAILABLE_FROM:time (time "2022-08-01T00:00:00Z"))
+  (defconst END_TIME:time (time "2022-07-31T08:00:00Z"))
 
   (defconst KDX_RATIO:decimal 50.0)
 
@@ -85,7 +86,7 @@
 
   (defun init ()
     (coin.create-account KDX_BANK (kdx-bank-guard))
-    (kdx.create-account KDX_BANK (kdx-bank-guard))
+    (kaddex.kdx.create-account KDX_BANK (kdx-bank-guard))
   )
 
   (defun lock:string
@@ -99,16 +100,15 @@
         (kda-return-fraction (at 'kda-return lockup-length))
         (kdx-return-fraction (at 'kdx-return lockup-length))
         (original-reservations (filter
-          (compose (at 'status) (!= priv-sale.STATUS_REJECTED))
-          (priv-sale.read-reservations reservation-account)))
+          (compose (at 'status) (!= kdx.priv-sale.STATUS_REJECTED))
+          (kdx.priv-sale.read-reservations reservation-account)))
         (kda-paid (fold (+) 0.0 (map (at 'amount-kda) original-reservations)))
         (kdx-allocated (* kda-paid KDX_RATIO))
         (kda-return (floor (* kda-paid kda-return-fraction) (coin.precision)))
-        (kdx-return (floor (* kdx-allocated kdx-return-fraction) (kdx.precision)))
+        (kdx-return (floor (* kdx-allocated kdx-return-fraction) (kaddex.kdx.precision)))
         (reservation-guard (at 'guard (coin.details reservation-account)))
         (current-time (at 'block-time (chain-data)))
       )
-      (enforce-guard reservation-guard)
       (enforce (> kdx-allocated 0.0) "You must have a nonnegative KDX reservation.")
       (with-capability (LOCK reservation-account lockup-seconds)
         (insert lockups reservation-account
@@ -145,20 +145,20 @@
       (bind lockup-record
         { 'kda-returned := kda-returned
         , 'kdx-returned := kdx-returned
-        , 'reservation-guard := reservation-guard
         , 'payout-account := payout-account
         , 'payout-guard := payout-guard }
-        (enforce-guard reservation-guard) ; QUESTION: enforce receiver account guard or reservation guard at this point?
-        ;; Payout KDA
-        (install-capability (coin.TRANSFER KDX_BANK payout-account kda-available))
-        (coin.transfer-create KDX_BANK payout-account payout-guard kda-available)
-        ;; Payout KDX
-        (install-capability (kdx.TRANSFER KDX_BANK payout-account kdx-available))
-        (kdx.transfer-create KDX_BANK payout-account payout-guard kdx-available)
-        (update lockups reservation-account
-          { 'kda-returned: (+ kda-returned kda-available)
-          , 'kdx-returned: (+ kdx-returned kdx-available) })
-        { 'kda: kda-available, 'kdx: kdx-available }
+        (with-capability (CLAIM reservation-account)
+          ;; Payout KDA
+          (install-capability (coin.TRANSFER KDX_BANK payout-account kda-available))
+          (coin.transfer-create KDX_BANK payout-account payout-guard kda-available)
+          ;; Payout KDX
+          (install-capability (kaddex.kdx.TRANSFER KDX_BANK payout-account kdx-available))
+          (kaddex.kdx.transfer-create KDX_BANK payout-account payout-guard kdx-available)
+          (update lockups reservation-account
+            { 'kda-returned: (+ kda-returned kda-available)
+            , 'kdx-returned: (+ kdx-returned kdx-available) })
+          { 'kda: kda-available, 'kdx: kdx-available }
+        )
       )
     )
   )
@@ -198,40 +198,10 @@
               (lockup-progress-fraction:decimal (/ lockup-intervals-passed lockup-intervals-total))
             )
             { 'kda: (floor (* lockup-progress-fraction kda-total-return) (coin.precision))
-            , 'kdx: (floor (* lockup-progress-fraction kdx-total-return) (kdx.precision)) }
+            , 'kdx: (floor (* lockup-progress-fraction kdx-total-return) (kaddex.kdx.precision)) }
           )
         )
       ))
-    )
-  )
-
-  (defun withdraw:string(reservation-account:string)
-    (with-read lockups reservation-account
-      { 'kdx-locked := kdx-locked
-      , 'initial-kdx-withdrawn := initial-kdx-withdrawn
-      , 'lockup-length := lockup-length
-      , 'lockup-end-time := lockup-end-time
-      , 'reservation-guard := reservation-guard
-      , 'payout-account := payout-account
-      , 'payout-guard := payout-guard }
-
-      (enforce (> (at 'block-time (chain-data)) lockup-end-time) "Lockup period not ended yet")
-      (enforce (> (at 'block-time (chain-data)) WITHDRAW_AVAILABLE_FROM) "Withdraw not available yet")
-      (enforce (not initial-kdx-withdrawn) "KDX already withdrawn")
-      (enforce-guard reservation-guard)
-      (enforce (> kdx-locked 0.0) "No withdraw amount available")
-
-        (update lockups reservation-account
-          {'initial-kdx-withdrawn: true })
-
-        (emit-event (WITHDRAW reservation-account kdx-locked))
-        ;; Payout KDX
-        (install-capability (kdx.TRANSFER KDX_BANK payout-account kdx-locked))
-        (kdx.transfer-create KDX_BANK payout-account payout-guard kdx-locked)
-
-        ;(if (!= lockup-length ASAP_LOCKUP_LENGTH) (with-capability (AGGREGATOR_NOTIFY) (kaddex.aggregator.aggregate-unstake account kdx-locked)))
-
-        (format "{} withdraw {} KDX" [reservation-account, kdx-locked])
     )
   )
 
@@ -323,6 +293,11 @@
     (insert lockup-options "3 months" { 'length: (days 90), 'kda-return: 0.01, 'kdx-return: 0.04 })
     (insert lockup-options "6 months" { 'length: (days 180), 'kda-return: 0.03, 'kdx-return: 0.17 })
     (insert lockup-options "9 months" { 'length: (days 270), 'kda-return: 0.05, 'kdx-return: 0.2 })
+    (insert lockup-options "12 months" { 'length: (days 360), 'kda-return: 0.07, 'kdx-return: 0.23 })
+    (insert lockup-options "15 months" { 'length: (days 450), 'kda-return: 0.09, 'kdx-return: 0.28 })
+    (insert lockup-options "18 months" { 'length: (days 540), 'kda-return: 0.11, 'kdx-return: 0.45 })
+    (insert lockup-options "21 months" { 'length: (days 630), 'kda-return: 0.13, 'kdx-return: 0.49 })
+    (insert lockup-options "24 months" { 'length: (days 720), 'kda-return: 0.15, 'kdx-return: 0.54 })
 
     (init)
   ]

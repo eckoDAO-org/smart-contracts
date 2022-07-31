@@ -4,7 +4,7 @@
 
 (module gas-station GOVERNANCE
   (defcap GOVERNANCE ()
-    (enforce-guard (keyset-ref-guard 'kaddex-ns-admin)))
+    (enforce-guard (keyset-ref-guard 'kaddex-gas-admin)))
 
   (implements gas-payer-v1)
   (use coin)
@@ -42,7 +42,7 @@
       (guard-any
         [
           (create-gas-payer-guard)
-          (keyset-ref-guard 'kaddex-ns-admin)
+          (keyset-ref-guard 'kaddex-gas-admin)
         ]))
   )
 

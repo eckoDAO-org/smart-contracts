@@ -11,12 +11,14 @@
 (env-data
   { 'kaddex-ns-user: ["kaddex-user"]
   , 'kaddex-ns-admin: ["kaddex-admin"]
-  , 'kaddex-ops-keyset: ["kaddex-ops"]
+  , 'kaddex-exchange-admin: ["kaddex-admin"]
+  , 'kaddex-exchange-ops: ["kaddex-ops"]
   , 'ns: "kaddex"
   , 'upgrade: 0
   , 'initial-lock: false
   })
-(define-keyset "kaddex-ops-keyset")
+(define-keyset 'kaddex-exchange-admin)
+(define-keyset 'kaddex-exchange-ops)
 (env-keys ["operate", "kaddex-user", "kaddex-admin"])
 
 (load "ns.pact")

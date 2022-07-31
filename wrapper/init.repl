@@ -4,20 +4,29 @@
  , 'ns-operate-keyset: ["operate"]
  , 'ns-genesis-keyset: { "keys": [], "pred": "="} })
 (load "../kadenaswap/root/fungible-v2.pact")
+(load "../kadenaswap/root/fungible-xchain-v1.pact")
 (load "../kadenaswap/root/coin.pact")
 (load "../kadenaswap/root/ns.pact")
 
 (env-data
   { 'kaddex-ns-user: ["kaddex-user"]
   , 'kaddex-ns-admin: ["kaddex-admin"]
-  , 'kaddex-ops-keyset: ["kaddex-ops"]
-  , 'kaddex-admin: ["kaddex-admin"]
+  , 'kaddex-wrapper-admin: ["kaddex-admin"]
+  , 'kaddex-alchemist-admin: ["kaddex-admin"]
+  , 'kaddex-wrapper-ops: ["kaddex-ops"]
+  , 'kaddex-alchemist-ops: ["kaddex-ops"]
+  , 'kaddex-exchange-admin: ["kaddex-admin"]
+  , 'kaddex-exchange-ops: ["kaddex-ops"]
   , 'ns: "kaddex"
   , 'upgrade: 0
   })
 
-(define-keyset "kaddex-ops-keyset")
-(define-keyset "kaddex-admin")
+(define-keyset "kaddex-exchange-admin")
+(define-keyset "kaddex-exchange-ops")
+(define-keyset "kaddex-alchemist-ops")
+(define-keyset "kaddex-alchemist-admin")
+(define-keyset "kaddex-wrapper-ops")
+(define-keyset "kaddex-wrapper-admin")
 (env-keys ["operate", "kaddex-user", "kaddex-admin", "kaddex-ops"])
 
 (load "../kadenaswap/ns.pact")
@@ -66,7 +75,7 @@
 (load "../kadenaswap/exchange.pact")
 
 (load "tokens/supply-control-v1.pact")
-(load "tokens/special-accounts-v2.pact")
+(load "tokens/special-accounts-v1.pact")
 (load "tokens/kdx.pact")
 (load "tokens/alchemist.pact")
 (load "tokens/skdx.pact")

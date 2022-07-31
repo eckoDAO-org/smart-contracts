@@ -1,36 +1,35 @@
+(load "../wrapper/init.repl")
+
 (begin-tx)
 
-;;Load Namespace Contract
-(env-data
- { 'ns-admin-keyset: ["admin"]
- , 'ns-operate-keyset: ["operate"]
- , 'ns-genesis-keyset: { "keys": [], "pred": "="} })
-(load "./root/ns.pact")
-
-;;Load Coin Contract
-(load "./root/fungible-v2.pact")
-(load "./root/coin.pact")
+(define-namespace "util" ns.GUARD_SUCCESS ns.GUARD_FAILURE)
 (load "./root/guards.pact")
 
+(commit-tx)
+(begin-tx)
 
 (env-data
-  { 'kaddex-ns-admin: ["admin"]
-  , 'kaddex-ns-ops: ["operate"]
+  { 'kaddex-ns-admin: ["kaddex-admin"]
+  , 'kaddex-aggregator-admin: ["agg-admin"]
+  , 'kaddex-aggregator-ops: ["agg-ops"]
   , 'ns: "kaddex"
   , 'upgrade: false})
-(env-keys ["admin", "operate"])
-(define-keyset "kaddex-ns-admin" (read-keyset "kaddex-ns-admin"))
-(define-keyset "kaddex-ns-ops" (read-keyset "kaddex-ns-ops"))
+(env-keys ["kaddex-admin", "kaddex-user"])
 (env-enable-repl-natives true) ;; enables usage of (print)
+(define-keyset 'kaddex-aggregator-admin)
+(define-keyset 'kaddex-aggregator-ops)
 (load "./aggregator.pact")
 
 (env-data
-  { 'kaddex-ns-admin: ["admin"]
-  , 'kaddex-ns-ops: ["operate"]
+  { 'kaddex-ns-admin: ["kaddex-admin"]
+  , 'kaddex-dao-admin: ["admin"]
+  , 'kaddex-dao-ops: ["ops"]
   , 'ns: "kaddex"
   , 'upgrade: false})
-(env-keys ["admin", "operate"])
+(env-keys ["kaddex-admin", "kaddex-user", "admin", "ops"])
 (env-enable-repl-natives true) ;; enables usage of (print)
+(define-keyset 'kaddex-dao-ops)
+(define-keyset 'kaddex-dao-admin)
 (load "./dao.pact")
 
 
@@ -46,12 +45,11 @@
   , 'henry:["henry"]
   , 'stark:["stark"]})
 (env-keys ["gov", "stark", "bob", "alice", "henry"])
-(test-capability (coin.COINBASE))
-(coin.coinbase "bobaddress" (read-keyset 'bob) 1000.0)
-(coin.coinbase "aliceaddress" (read-keyset 'alice) 1000.0)
-(coin.coinbase "henryaddress" (read-keyset 'henry) 1000.0)
-(coin.coinbase "starkaddress" (read-keyset 'stark) 1000.0)
-(coin.coinbase "k:govaddress" (read-keyset 'gov) 1000.0)
+(kaddex.kdx.create-account "bobaddress" (read-keyset 'bob))
+(kaddex.kdx.create-account "aliceaddress" (read-keyset 'alice))
+(kaddex.kdx.create-account "henryaddress" (read-keyset 'henry))
+(kaddex.kdx.create-account "starkaddress" (read-keyset 'stark))
+(kaddex.kdx.create-account "k:gov" (read-keyset 'gov))
 
 (commit-tx)
 
@@ -61,13 +59,13 @@
 (use kaddex.dao)
 
 (env-data
-  { 'kaddex-ns-admin: ["admin"]
-  , 'kaddex-ns-ops: ["operate"]
+  { 'kaddex-ns-admin: ["kaddex-admin"]
+  , 'kaddex-dao-ops: ["ops"]
   , 'ns: "kaddex"})
-(env-keys ["admin", "operate"])
+(env-keys ["kaddex-admin", "ops", "agg-ops"])
 
-(grant-privilege (read-keyset 'kaddex-ns-ops ) "aggregate-stake")
-(grant-privilege (read-keyset 'kaddex-ns-ops ) "aggregate-unstake")
+(grant-privilege (read-keyset 'kaddex-dao-ops ) "aggregate-stake")
+(grant-privilege (read-keyset 'kaddex-dao-ops ) "aggregate-unstake")
 (commit-tx)
 (begin-tx)
 (use kaddex.aggregator)
@@ -82,8 +80,8 @@
 ; (env-keys ["gov","operate","bob"])
 
 (env-data
-  { 'kaddex-ns-ops: ["operate"]})
-(env-keys ["operate"])
+  { 'kaddex-dao-ops: ["ops"]})
+(env-keys ["ops"])
 
 
 (env-chain-data {"block-time": (time "2022-02-10T23:59:00Z")})
@@ -101,24 +99,24 @@
 (env-chain-data {"block-time": (time "2022-05-10T14:59:00Z")})
 
 ;
-; (env-data  { 'kaddex-ns-ops: ["operate"]})
-; (env-keys ["operate"])
+; (env-data  { 'kaddex-dao-ops: ["ops"]})
+; (env-keys ["ops"])
 
 
 (env-sigs [
-  {  'key: "operate",
+  {  'key: "ops",
    'caps: [(OPS)]}
   ])
 (test-capability (OPS))
 
-(create-proposal "New interesting proposal" "this is a test" "k:govaddress" (time "2022-05-10T23:59:00Z") (time "2022-05-20T23:59:00Z"))
-(create-proposal "Proposal about the gas" "Gas needs to be reduced" "k:govaddress" (time "2022-05-11T23:59:00Z") (time "2022-05-15T23:59:00Z"))
-(create-proposal "New interesting proposal 1" "this is a test" "k:govaddress" (time "2022-05-12T23:59:00Z") (time "2022-05-16T23:59:00Z"))
-(create-proposal "Proposal about the gas 1" "Gas needs to be reduced" "k:govaddress" (time "2022-05-13T23:59:00Z") (time "2022-05-15T23:59:00Z"))
-(create-proposal "New interesting proposal 2" "this is a test" "k:govaddress" (time "2022-05-14T23:59:00Z") (time "2022-05-20T23:59:00Z"))
-(create-proposal "Proposal about the gas 2" "Gas needs to be reduced" "k:govaddress" (time "2022-05-15T23:59:00Z") (time "2022-05-18T23:59:00Z"))
-(create-proposal "New interesting proposal 3" "this is a test" "k:govaddress" (time "2022-05-16T23:59:00Z") (time "2022-05-20T23:59:00Z"))
-(create-proposal "Proposal about the gas 3" "Gas needs to be reduced" "k:govaddress" (time "2022-05-17T23:59:00Z") (time "2022-05-23T23:59:00Z"))
+(create-proposal "New interesting proposal" "this is a test" "k:gov" (time "2022-05-10T23:59:00Z") (time "2022-05-20T23:59:00Z"))
+(create-proposal "Proposal about the gas" "Gas needs to be reduced" "k:gov" (time "2022-05-11T23:59:00Z") (time "2022-05-15T23:59:00Z"))
+(create-proposal "New interesting proposal 1" "this is a test" "k:gov" (time "2022-05-12T23:59:00Z") (time "2022-05-16T23:59:00Z"))
+(create-proposal "Proposal about the gas 1" "Gas needs to be reduced" "k:gov" (time "2022-05-13T23:59:00Z") (time "2022-05-15T23:59:00Z"))
+(create-proposal "New interesting proposal 2" "this is a test" "k:gov" (time "2022-05-14T23:59:00Z") (time "2022-05-20T23:59:00Z"))
+(create-proposal "Proposal about the gas 2" "Gas needs to be reduced" "k:gov" (time "2022-05-15T23:59:00Z") (time "2022-05-18T23:59:00Z"))
+(create-proposal "New interesting proposal 3" "this is a test" "k:gov" (time "2022-05-16T23:59:00Z") (time "2022-05-20T23:59:00Z"))
+(create-proposal "Proposal about the gas 3" "Gas needs to be reduced" "k:gov" (time "2022-05-17T23:59:00Z") (time "2022-05-23T23:59:00Z"))
 
 ;; Uncomment the following line for error "Number of votes can't be less than or equal to zero"
 ; (approved-vote "New interesting proposal" "henryaddress" -2.0)
@@ -227,7 +225,7 @@
 (get-proposals-ids)
 
 (env-sigs [
-  {  'key: "operate",
+  {  'key: "ops",
    'caps: [(OPS)]}
   ])
 

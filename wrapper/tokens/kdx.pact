@@ -19,9 +19,14 @@
           (<= (length account) 256)))
     ]
 
-  (implements special-accounts-v2)
+  (implements special-accounts-v1)
   (implements supply-control-v1)
+
   (implements fungible-v2)
+  (implements fungible-xchain-v1)
+
+  (bless "jcm686xze2UkFVCKpzoS_1UuB63YltU9KgJ_PYVkP38")
+  (bless "m3xMDX0td2mr3s3hwKNqj5MPTczFT97vuJYBS-mwq4g")
   ; --------------------------------------------------------------------------
   ; Schemas and Tables
 
@@ -50,12 +55,6 @@
 
   (deftable special-accounts:{special-account})
 
-  (defschema chain-balance
-    chain:string
-    balance:decimal)
-
-  (deftable chain-balances:{chain-balance})
-
   (defschema mint-cap
     maximum:decimal)
 
@@ -82,11 +81,7 @@
     (enforce-keyset 'kdx-admin-keyset))
 
   (defcap OPS ()
-    (enforce-keyset 'kaddex-ops-keyset))
-
-  (defcap BALANCE_UPDATE ()
-    "Internal capability for updating chain balance data"
-    true)
+    (enforce-keyset 'kdx-ops-keyset))
 
   (defcap BURN
     ( sender:string
@@ -125,7 +120,7 @@
   )
 
   (defcap WRAP:bool
-    ( type:module{fungible-v2,supply-control-v1}
+    ( type:string
       sender:string
       receiver:string
       amount:decimal
@@ -151,7 +146,7 @@
   )
 
   (defcap UNWRAP:bool
-    ( type:module{fungible-v2,supply-control-v1}
+    ( type:string
       sender:string
       receiver:string
       amount:decimal
@@ -201,6 +196,40 @@
       newbal)
   )
 
+  (defcap TRANSFER_XCHAIN:bool
+    ( sender:string
+      receiver:string
+      amount:decimal
+      target-chain:string
+    )
+
+    @managed amount TRANSFER_XCHAIN-mgr
+    (enforce-contract-unlocked)
+    (enforce-valid-chain target-chain)
+    (enforce-unit amount)
+    (enforce (> amount 0.0) "Cross-chain transfers require a positive amount")
+    (compose-capability (DEBIT sender))
+  )
+
+  (defun TRANSFER_XCHAIN-mgr:decimal
+    ( managed:decimal
+      requested:decimal
+    )
+
+    (enforce (>= managed requested)
+      (format "TRANSFER_XCHAIN exceeded for balance {}" [managed]))
+    0.0
+  )
+
+  (defcap TRANSFER_XCHAIN_RECD:bool
+    ( sender:string
+      receiver:string
+      amount:decimal
+      source-chain:string
+    )
+    @event true
+  )
+
   ; --------------------------------------------------------------------------
   ; Constants
 
@@ -227,8 +256,8 @@
   (defconst MAXIMUM_ACCOUNT_LENGTH 256
     "Maximum account name length admissible for KDX accounts")
 
-  ;; validate the chain ID when doing a crosschain transfer to prevent funds stuck in limbo
-  (defconst VALID_CHAINS ["0" "1" "2" "3" "4" "5" "6" "7" "8" "9" "10" "11" "12" "13" "14" "15" "16" "17" "18" "19"])
+  (defconst VALID_CHAINS (map (int-to-str 10) (enumerate 0 19))
+    "List of currently valid chain ids")
 
   (defconst ISSUANCE_ACCOUNT 'kdx-bank)
 
@@ -241,14 +270,14 @@
   ; --------------------------------------------------------------------------
   ; Utilities
 
-  (defun resolve-special:string (type:module{fungible-v2,supply-control-v1})
-    (with-read special-accounts (format "{}" [type])
+  (defun resolve-special:string (name:string)
+    (with-read special-accounts name
       { 'account := account }
         account))
 
-  (defun assign-special:string (type:module{fungible-v2,supply-control-v1} account:string)
+  (defun assign-special:string (name:string account:string)
     (with-capability (GOVERNANCE)
-      (write special-accounts (format "{}" [type]) { 'account: account })))
+      (write special-accounts name { 'account: account })))
 
   (defun get-purpose-list:[string] ()
     (map (lambda (o) (at 'purpose o)) TOKEN_PURPOSES))
@@ -281,34 +310,19 @@
     (if (= action 'burn)
         (require-capability (DEBIT account))
         (require-capability (CREDIT account)))
-    (let
-      ( (supply (read supply-table purpose))
-        (chain (at 'chain-id (chain-data)))
-      )
+    (let ((supply (read supply-table purpose)))
       (if (= action 'burn)
-          (with-capability (BALANCE_UPDATE)
-            (update-chain-balance chain (- 0.0 delta))
-            (update supply-table purpose { 'total-burned: (+ delta (at 'total-burned supply)) }))
-          (with-capability (BALANCE_UPDATE)
-            (let
-              ((minted (total-minted))
-               (available (get-mint-cap)))
-              (enforce (< (+ minted delta) available)
-                (format "Already minted {}, minting {} exceeds cap {}"
-                  [ minted delta available ])))
-            (update-chain-balance chain delta)
+          (update supply-table purpose { 'total-burned: (+ delta (at 'total-burned supply)) })
+          (let
+            ((minted (total-minted))
+              (available (get-mint-cap)))
+            (enforce (< (+ minted delta) available)
+              (format "Already minted {}, minting {} exceeds cap {}"
+                [ minted delta available ]))
             (update supply-table purpose { 'total-minted: (+ delta (at 'total-minted supply)) }))
       )
     )
   )
-
-  (defun update-chain-balance (chain:string delta:decimal)
-    (require-capability (BALANCE_UPDATE))
-    (update chain-balances chain { 'balance: (+ delta (get-chain-balance chain)) })
-  )
-
-  (defun get-chain-balance:decimal (chain:string)
-    (at 'balance (read chain-balances chain)))
 
   (defun get-supply (purpose:string)
     (enforce-valid-purpose purpose)
@@ -387,6 +401,7 @@
   (defun create-account:string (account:string guard:guard)
     @model [ (property (valid-account account)) ]
 
+    (enforce-contract-unlocked)
     (validate-account account)
     (enforce-reserved account guard)
 
@@ -456,7 +471,7 @@
     )
   )
 
-  (defun wrap-transfer:string (type:module{fungible-v2,supply-control-v1} sender:string receiver:string amount:decimal)
+  (defun wrap-transfer:string (type:string sender:string receiver:string amount:decimal)
     @model [ (property conserves-mass)
              (property (> amount 0.0))
              (property (valid-account sender)) ]
@@ -472,7 +487,7 @@
           { 'guard := g }
             (credit holder g amount)))))
 
-  (defun unwrap-transfer:string (type:module{fungible-v2,supply-control-v1} sender:string receiver:string receiver-guard:guard amount:decimal)
+  (defun unwrap-transfer:string (type:string sender:string receiver:string receiver-guard:guard amount:decimal)
     @model [ (property conserves-mass)
              (property (> amount 0.0))
              (property (valid-account receiver)) ]
@@ -617,7 +632,8 @@
     @doc "Schema for yielded value in cross-chain transfers"
     receiver:string
     receiver-guard:guard
-    amount:decimal)
+    amount:decimal
+    source-chain:string)
 
   (defpact transfer-crosschain:string
     ( sender:string
@@ -632,7 +648,7 @@
            ]
 
     (step
-      (with-capability (DEBIT sender)
+      (with-capability (TRANSFER_XCHAIN sender receiver amount target-chain)
 
         (validate-account sender)
         (validate-account receiver)
@@ -649,21 +665,13 @@
 
         (emit-event (TRANSFER sender "" amount))
 
-        (with-capability (BALANCE_UPDATE)
-          (let*
-            ((chain-id (at 'chain-id (chain-data)))
-             ;; Update local copy of local chain balance
-             (ignore (update-chain-balance chain-id (- 0.0 amount)))
-             ;; Update local copy of target chain balance (assumes crosschain success)
-             (ignore_ (update-chain-balance target-chain amount))
-             (crosschain-details:object{crosschain-schema}
-              { "receiver": receiver
-              , "receiver-guard": receiver-guard
-              , "amount": amount
-              , "source-chain": chain-id
-              , "source-chain-balance": (get-chain-balance chain-id) }))
-            (yield crosschain-details target-chain)
-          )
+        (let
+          ((crosschain-details:object{crosschain-schema}
+            { "receiver": receiver
+            , "receiver-guard": receiver-guard
+            , "amount": amount
+            , "source-chain": (at 'chain-id (chain-data))}))
+          (yield crosschain-details target-chain)
         )))
 
     (step
@@ -672,14 +680,10 @@
         , "receiver-guard" := receiver-guard
         , "amount" := amount
         , "source-chain" := source-chain
-        , "source-chain-balance" := source-chain-balance
         }
         (emit-event (TRANSFER "" receiver amount))
-        ;; Update local copy of source chain balance
-        (update chain-balances source-chain { 'balance: source-chain-balance })
-        ;; Update local copy of local chain balance
-        (with-capability (BALANCE_UPDATE)
-          (update-chain-balance (at 'chain-id (chain-data)) amount))
+        (emit-event (TRANSFER_XCHAIN_RECD "" receiver amount source-chain))
+
         ;; step 2 - credit create account on target chain
         (with-capability (CREDIT receiver)
           (credit receiver receiver-guard amount))
@@ -691,20 +695,17 @@
       (with-capability (GOVERNANCE)
         (insert token-table ISSUANCE_ACCOUNT
           { 'balance: 0.0
-          , 'guard: (read-keyset 'kdx-admin-keyset) })
+          , 'guard: (keyset-ref-guard 'kdx-admin-keyset) })
         (update-mint-cap 0.0)
         (let
           ( (create-supply-table (lambda (purpose)
                                    (insert supply-table purpose
                                            { 'total-minted: 0.0, 'total-burned: 0.0 })))
-            (create-chain-record (lambda (chain-id)
-              (insert chain-balances chain-id { 'chain: chain-id, 'balance: 0.0 })))
           )
           (map (create-supply-table) (get-purpose-list))
-          (map (create-chain-record) VALID_CHAINS)
         )
-        (assign-privilege BURN_PRIVILEGE (read-keyset 'kdx-admin-keyset))
-        (assign-privilege MINT_PRIVILEGE (read-keyset 'kdx-admin-keyset))
+        (assign-privilege BURN_PRIVILEGE (keyset-ref-guard 'kdx-admin-keyset))
+        (assign-privilege MINT_PRIVILEGE (keyset-ref-guard 'kdx-admin-keyset))
       )
     )
 )
@@ -716,12 +717,24 @@
       (create-table privileges)
       (create-table supply-table)
       (create-table special-accounts)
-      (create-table chain-balances)
       (create-table mint-cap-table)
       (init)
+      (set-contract-lock true)
     ]
     (if (= (read-integer 'upgrade) 1)
-        [ ;; upgrade from v1 (devnet deploy) to v2 -- no schema changes
-          "upgrade complete"
+        [ ;; upgrade from v1 (original mainnet deploy) to v2
+          (create-table contract-lock)
+          (insert contract-lock CONTRACT_LOCK_KEY {'lock: false})
+          (create-table special-accounts)
+          (create-table mint-cap-table)
+          (update-mint-cap 0.0)
+          (with-capability (kaddex.kdx.GOVERNANCE)
+            [
+              (assign-privilege BURN_PRIVILEGE (keyset-ref-guard 'kdx-admin-keyset))
+              (assign-privilege MINT_PRIVILEGE (keyset-ref-guard 'kdx-admin-keyset))
+            ]
+          )
         ]
-        [(enforce false (format "Invalid upgrade field: {}" [(read-msg 'upgrade)]))]))
+        (if (= (read-integer 'upgrade) 2)
+            "upgrade completed"
+            [(enforce false (format "Invalid upgrade field: {}" [(read-msg 'upgrade)]))])))

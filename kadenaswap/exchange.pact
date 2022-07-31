@@ -10,7 +10,7 @@
 ;; Even though it's low level, users can still call the
 ;; `swap` function directly as well.
 
-(enforce-pact-version "4.3")
+;(enforce-pact-version "4.3")
 
 (namespace (read-msg 'ns))
 
@@ -71,10 +71,10 @@
   ]
 
   (defcap GOVERNANCE ()
-    (enforce-guard (keyset-ref-guard 'kaddex-ns-admin)))
+    (enforce-guard (keyset-ref-guard 'kaddex-exchange-admin)))
 
   (defcap OPS ()
-    (enforce-guard (keyset-ref-guard 'kaddex-ops-keyset)))
+    (enforce-guard (keyset-ref-guard 'kaddex-exchange-ops)))
 
   (defcap CREATE_PAIR
     ( token0:module{fungible-v2}

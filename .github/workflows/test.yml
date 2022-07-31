@@ -67,6 +67,13 @@ jobs:
           r=`tail -1 out.log | grep "Load successful"`
           if [ -n "$r" ]; then exit 0; else echo "Pact run failed."; exit 1; fi
 
+      - name: kadenaswap/gas-station/gas-station.repl
+        run: |
+          bin/pact -t kadenaswap/gas-station/gas-station.repl > out.log 2>&1
+          cat out.log
+          r=`tail -1 out.log | grep "Load successful"`
+          if [ -n "$r" ]; then exit 0; else echo "Pact run failed."; exit 1; fi
+
       - name: wrapper/tokens/alchemist.repl
         run: |
           bin/pact -t wrapper/tokens/alchemist.repl > out.log 2>&1

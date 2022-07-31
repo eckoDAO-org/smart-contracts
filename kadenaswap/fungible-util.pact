@@ -3,7 +3,7 @@
 (module fungible-util GOVERNANCE
 
   (defcap GOVERNANCE ()
-    (enforce-guard (keyset-ref-guard 'kaddex-ns-admin)))
+    (enforce-guard (keyset-ref-guard 'kaddex-exchange-admin)))
 
   (defun enforce-valid-amount
     ( precision:integer

@@ -47,7 +47,7 @@
 ;; for the fees, so a period where the user collected more fees will be the dominant value
 ;; of the multiplier used for these "settled" fees.
 
-(enforce-pact-version "4.3")
+;;(enforce-pact-version "4.3")
 
 (namespace (read-msg 'ns))
 
@@ -190,12 +190,10 @@
     (create-user-guard (enforce-bank-access (format-token (get-base-token)))))
 
   (defcap GOVERNANCE ()
-    (enforce-guard (keyset-ref-guard 'kaddex-ns-admin)))
+    (enforce-guard (keyset-ref-guard 'kaddex-wrapper-admin)))
 
   (defcap OPS ()
-    (enforce-guard (keyset-ref-guard 'kaddex-ops-keyset)))
-
-  (defcap DEBUG (msg:string) @event true) ;; can be used with emit-event as an alternative to (print)
+    (enforce-guard (keyset-ref-guard 'kaddex-wrapper-ops)))
 
   (defcap LIQUIDITY_POS_GUARD
     ( token0:module{fungible-v2}
@@ -256,8 +254,8 @@
     )
     "Checks if the given path is valid for swapping token into base-token"
     (let ((base-token (get-base-token)))
-      (if (= token base-token)
-          (= path [base-token]) ;; base token does not need swapping
+      (if (tokens-equal token base-token)
+          (= (map (format-token) path) [(format-token base-token)]) ;; base token does not need swapping
           (let* ( (path-length (length path))
                   (last-index (- path-length 1))
                   (path-component-exists
@@ -269,8 +267,8 @@
                 )
             (and (>= path-length 2) ;; the path needs 2 or more components
                  (and path-is-tracked ;; the path needs to be tracked by the TWAP oracle
-                      (and (and (= (at 0 path) token) ;; path needs to start with token
-                                (= (at last-index path) base-token)) ;; and end with base-token
+                      (and (and (tokens-equal (at 0 path) token) ;; path needs to start with token
+                                (tokens-equal (at last-index path) base-token)) ;; and end with base-token
                            (fold (and) true (map (path-component-exists) (enumerate 1 last-index)))))) ;; every pair in the path needs to exist
           )
       )
@@ -603,8 +601,8 @@
       )
       ;; verify the liquidity position guard and invariants
       (install-capability (LIQUIDITY_POS_GUARD tokenA tokenB sender))
-      (enforce (= tokenA token0) "sanity check: token0 is tokenA")
-      (enforce (= tokenB token1) "sanity check: token1 is tokenB")
+      (enforce (tokens-equal tokenA token0) "sanity check: token0 is tokenA")
+      (enforce (tokens-equal tokenB token1) "sanity check: token1 is tokenB")
       (enforce (<= requested-liquidity entry-total-liquidity)
         (format "remove-liquidity: Insufficient liquidity position ({} > {})" [requested-liquidity, entry-total-liquidity]))
       (enforce (<= requested-liquidity actual-total-liquidity) "sanity check: actual-total-liquidity covers the amount")
@@ -687,13 +685,10 @@
                     , 'end-time: (add-time now BOOSTED_REWARD_VESTING_TIME)
                     , 'status: 'PENDING-REMOVE
                     })
-                  (emit-event (DEBUG (format "request-id: {} now: {} pair-key: {} sender: {} tokenA-fees: {} tokenB-fees: {}" [request-id now pair-key sender tokenA-fees tokenB-fees])))
                   ;; add the new pending request to the list of pending requests
                   (with-default-read pending-requests sender { 'requests: [] } { 'requests := requests }
-                    (emit-event (DEBUG (format "pending-requests-sender: {}" [requests])))
                     (write pending-requests sender { 'requests: (+ requests [request-id]) }))
                   (with-default-read pending-requests ALL_PENDING_REQUESTS_KEY { 'requests: [] } { 'requests := requests }
-                    (emit-event (DEBUG (format "pending-requests-all: {}" [requests])))
                     (write pending-requests ALL_PENDING_REQUESTS_KEY { 'requests: (+ requests [request-id]) }))
                 )
               )
@@ -1471,7 +1466,9 @@
       (create-table liquidity-accounts)
       (create-table reward-claim-requests)
       (create-table pending-requests)
+      (kaddex.kdx.set-contract-lock false)
       (init (read-msg 'initial-lock))
+      (kaddex.kdx.set-contract-lock true)
     ]
     (if (= (read-integer 'upgrade) 1)
         [ ;; upgrade from v1 (original devnet deploy) to v2 -- no schema changes
