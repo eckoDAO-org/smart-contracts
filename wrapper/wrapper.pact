@@ -130,9 +130,6 @@
       requests:[string])
   (deftable pending-requests:{pending-request-schema})
   ;; if the key is account name, then requests is a list of pending requests for that account
-  ;; if the key is ALL_PENDING_REQUESTS_KEY, then requests is the list of all pending requests
-
-  (defconst ALL_PENDING_REQUESTS_KEY "")
 
   ;; this is a simple global lock that can be toggled by the operators to pause the contract if necessary
   (defschema contract-lock-status
@@ -688,8 +685,6 @@
                   ;; add the new pending request to the list of pending requests
                   (with-default-read pending-requests sender { 'requests: [] } { 'requests := requests }
                     (write pending-requests sender { 'requests: (+ requests [request-id]) }))
-                  (with-default-read pending-requests ALL_PENDING_REQUESTS_KEY { 'requests: [] } { 'requests := requests }
-                    (write pending-requests ALL_PENDING_REQUESTS_KEY { 'requests: (+ requests [request-id]) }))
                 )
               )
               (let ((dummy 'dumb))
@@ -1147,8 +1142,6 @@
           ;; remove the request-id from the pending requests table entries
           (with-read pending-requests sender { 'requests := requests }
             (update pending-requests sender { 'requests: (remove-elem-from-list request-id requests) }))
-          (with-read pending-requests ALL_PENDING_REQUESTS_KEY { 'requests := requests }
-            (update pending-requests ALL_PENDING_REQUESTS_KEY { 'requests: (remove-elem-from-list request-id requests) }))
 
           (format "You have successfully claimed {} KDX in rewards" [full-final-amount])
         )
@@ -1448,6 +1441,9 @@
   (defun is-reward-request-claimable:bool (request-id:string)
     (with-read reward-claim-requests request-id { 'status := status }
       (if (= status 'PENDING-CLAIM) true false)))
+
+  (defun get-all-reward-requests:[string] ()
+    (keys reward-claim-requests))
 
   (defun init (initial-lock:bool)
     (insert contract-lock CONTRACT_LOCK_KEY {'lock: initial-lock})
