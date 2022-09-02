@@ -242,6 +242,9 @@
   ;; how long users need to wait before they can claim their KDX boosted rewards
   (defconst BOOSTED_REWARD_VESTING_TIME (days 7))
 
+  ;; blessing old module versions
+  (bless "n2dkTQCKBW1GjGC89cyfjlrDJC93iWaBlsC0OXMNZYA")
+
   ;; utility function to get a module reference to KDX
   (defun get-base-token:module{fungible-v2} () kaddex.kdx)
 
@@ -508,7 +511,7 @@
                   ;; add up the new liquidity with the old settled amounts
                   (total-fee-liquidity (+ settled-liquidity fees-liquidity))
                   ;; update the multiplier using a weighted average using the liquidity as weights
-                  (new-multiplier (try 0.0 (+ (* (/ settled-liquidity total-fee-liquidity) settled-multiplier) (* (/ fees-liquidity total-fee-liquidity) last-multiplier))))
+                  (new-multiplier (+ (* (try-div settled-liquidity total-fee-liquidity) settled-multiplier) (* (try-div fees-liquidity total-fee-liquidity) last-multiplier)))
                 )
                 (if (and (> tokenA-fees MINIMUM_FEE_FOR_BOOSTER) (> tokenB-fees MINIMUM_FEE_FOR_BOOSTER))
                     (let ((dummy 'dummy))
@@ -552,6 +555,8 @@
     (if (< a b) a b))
   (defun remove-elem-from-list (elem lst)
     (filter (lambda (x) (!= x elem)) lst))
+  (defun try-div:decimal (a:decimal b:decimal)
+    (if (= b 0.0) 0.0 (/ a b)))
 
   (defun get-oracle-time-cumulative-price:[object{exchange.observation}]
     ( path:[module{fungible-v2}] )

@@ -248,12 +248,18 @@
   ;; the percentage of the total swap that is reserved by the exchange (0.05%, used for the staking program)
   (defconst FEE_RESERVED 0.0005)
 
+  ;; blessing old module versions
+  (bless "yjHtW7n1KwaNBdwKB3o0c1nlHqRUA5vTVb-vtcmcXs0")
+
   (defun init (initial-lock:bool)
     "Initialize the contract."
     (insert contract-lock CONTRACT_LOCK_KEY {'lock: initial-lock})
     (with-capability (ISSUING)
       (tokens.init-issuer (create-issuing-guard)))
   )
+
+  (defun try-div:decimal (a:decimal b:decimal)
+    (if (= b 0.0) 0.0 (/ a b)))
 
   (defun get-lock-account-principal (key:string)
     (create-principal (create-liquidity-guard key))
@@ -334,8 +340,8 @@
         (time-delta (diff-time block-time last-observed))
         (reserve0 (at 'reserve leg0))
         (reserve1 (at 'reserve leg1))
-        (price0 (try 0.0 (/ reserve0 reserve1)))
-        (price1 (try 0.0 (/ reserve1 reserve0)))
+        (price0 (try-div reserve0 reserve1))
+        (price1 (try-div reserve1 reserve0))
         ;; TODO: round to the max of the precisions of the tokens instead of 8?
         (cumulative-price0 (round (+ last-cumulative-price0 (* time-delta price0)) 8))
         (cumulative-price1 (round (+ last-cumulative-price1 (* time-delta price1)) 8))
@@ -359,8 +365,8 @@
         (reserve1 (at 'reserve leg1))
       )
       (if (is-leg0 pair token-in)
-          (try 0.0 (/ reserve1 reserve0)) ;; TODO: do we realy need this try here?
-          (try 0.0 (/ reserve0 reserve1))
+          (try-div reserve1 reserve0)
+          (try-div reserve0 reserve1)
       )
       ;; TODO: should we round the result here?
     )
