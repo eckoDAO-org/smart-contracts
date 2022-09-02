@@ -1,3 +1,8 @@
+;; disable Pact 4.4 changes until we update to using namespaced keysets
+;; the module code only enforces existing keysets and as long as we dont need
+;; to define a new keyset, we should be fine
+(env-exec-config ["DisablePact44"])
+
 (begin-tx)
 (env-data
  { 'ns-admin-keyset: ["admin"]
@@ -22,6 +27,9 @@
 (load "gas-guards.pact")
 (load "gas-station.pact")
 (commit-tx)
+
+;; Revert back to Pact 4.4 behavior
+(env-exec-config [])
 
 (begin-tx)
 (env-keys [])

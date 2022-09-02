@@ -1,3 +1,7 @@
+;; disable Pact 4.4 changes until we update to using namespaced keysets
+;; the module code only enforces existing keysets and as long as we dont need
+;; to define a new keyset, we should be fine
+(env-exec-config ["DisablePact44"])
 
 (begin-tx)
 (env-data
@@ -29,6 +33,9 @@
 
 (load "swap-callable.pact")
 (commit-tx)
+
+;; Revert back to Pact 4.4 behavior
+(env-exec-config [])
 
 ;; test init-issuer guard
 (begin-tx)

@@ -1,3 +1,8 @@
+;; disable Pact 4.4 changes until we update to using namespaced keysets
+;; the module code only enforces existing keysets and as long as we dont need
+;; to define a new keyset, we should be fine
+(env-exec-config ["DisablePact44"])
+
 (begin-tx "Loading root namespace and coin")
 (env-data
  { 'ns-admin-keyset: ["admin"]
@@ -17,6 +22,8 @@
   , 'kaddex-alchemist-ops: ["kaddex-ops"]
   , 'kaddex-exchange-admin: ["kaddex-admin"]
   , 'kaddex-exchange-ops: ["kaddex-ops"]
+  , 'kdx-ops-keyset: ["kaddex-ops"]
+  , 'kdx-admin-keyset: ["kaddex-admin"]
   , 'ns: "kaddex"
   , 'upgrade: 0
   })
@@ -27,6 +34,8 @@
 (define-keyset "kaddex-alchemist-admin")
 (define-keyset "kaddex-wrapper-ops")
 (define-keyset "kaddex-wrapper-admin")
+(define-keyset "kdx-ops-keyset")
+(define-keyset "kdx-admin-keyset")
 (env-keys ["operate", "kaddex-user", "kaddex-admin", "kaddex-ops"])
 
 (load "../kadenaswap/ns.pact")
@@ -68,16 +77,34 @@
 (define-keyset 'alice)
 (define-keyset 'fee-to-addr)
 
-(define-keyset 'kdx-admin-keyset)
 
-
-(env-keys ["operate", "kaddex-user", "kaddex-admin", "bob", "alice"])
+(env-keys ["operate", "kaddex-user", "kaddex-ops", "kaddex-admin", "bob", "alice"])
 (load "../kadenaswap/exchange.pact")
+(commit-tx)
+
+;; Revert back to Pact 4.4 behavior
+(env-exec-config [])
+
+(begin-tx)
+(kaddex.exchange.set-contract-lock false)
+(commit-tx)
+
+(begin-tx)
 
 (load "tokens/supply-control-v1.pact")
 (load "tokens/special-accounts-v1.pact")
 (load "tokens/kdx.pact")
+(commit-tx)
+(begin-tx)
+(kaddex.kdx.set-contract-lock false)
+(commit-tx)
+(begin-tx)
 (load "tokens/alchemist.pact")
+(commit-tx)
+(begin-tx)
+(kaddex.alchemist.set-contract-lock false)
+(commit-tx)
+(begin-tx)
 (load "tokens/skdx.pact")
 (load "tokens/vkdx.pact")
 
@@ -93,6 +120,8 @@
 ;; Test mint cap
 
 (env-chain-data { 'chain-id: "0" })
+
+(kaddex.kdx.set-contract-lock false)
 
 (expect "Mint success" 1.0
   (kaddex.kdx.mint 'network-rewards 'bob (read-keyset 'bob) 1.0))

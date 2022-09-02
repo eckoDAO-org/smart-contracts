@@ -1,5 +1,10 @@
 (load "../wrapper/init.repl")
 
+;; disable Pact 4.4 changes until we update to using namespaced keysets
+;; the module code only enforces existing keysets and as long as we dont need
+;; to define a new keyset, we should be fine
+(env-exec-config ["DisablePact44"])
+
 (begin-tx)
 (env-data { 'ns: "kaddex", 'upgrade: false, 'admin-keyset: ['admin]})
 (env-data
@@ -37,6 +42,15 @@
 (env-dynref fungible-v2 coin)
 (env-dynref kaddex.swap-callable-v1 kaddex.noop-callable)
 
+(commit-tx)
+
+;; Revert back to Pact 4.4 behavior
+(env-exec-config [])
+
+(begin-tx)
+(kaddex.staking.set-contract-lock false)
+(kaddex.alchemist.set-contract-lock false)
+(kaddex.kdx.set-contract-lock false)
 (commit-tx)
 
 (begin-tx "Register sKDX with Alchemist")
@@ -309,20 +323,19 @@
           (claim-success (!= (take 4 claim-result) "FAIL"))
           (events (env-events true))
         )
-        (cond
-          ((!= claim-success expect-success)
-           (record-trace epoch account 'claim-reward false (format "Expected claim success: {}, actual claim success: {}" [ expect-success claim-success ])))
-          ((not claim-success)
-           (record-trace epoch account 'claim-reward true (format "Expected claim success: {}, actual claim success: {}" [ expect-success claim-success ])))
-          (let ((result-balance (kaddex.kdx.get-balance account)))
-            (if (<= (abs (- result-balance expected-balance)) 0.000000000001)
-              (record-trace epoch account 'claim-reward true
-                (format "claimed {}'s rewards, {} out, checks out"
-                  [account expected-reward-return]))
-              (record-trace epoch account 'claim-reward false
-                (format "Expected {} out when claiming {}'s rewards, got {} instead"
-                  [expected-reward-return account (- result-balance previous-balance)])))
-            (update stakers account { 'accrued: 0.0, 'last-claimed: epoch }))))))
+        (if (!= claim-success expect-success)
+            (record-trace epoch account 'claim-reward false (format "Expected claim success: {}, actual claim success: {}" [ expect-success claim-success ]))
+            (if (not claim-success)
+                (record-trace epoch account 'claim-reward true (format "Expected claim success: {}, actual claim success: {}" [ expect-success claim-success ]))
+                (let ((result-balance (kaddex.kdx.get-balance account)))
+                  (if (<= (abs (- result-balance expected-balance)) 0.000000000001)
+                      (record-trace epoch account 'claim-reward true
+                                    (format "claimed {}'s rewards, {} out, checks out"
+                                            [account expected-reward-return]))
+                      (record-trace epoch account 'claim-reward false
+                                    (format "Expected {} out when claiming {}'s rewards, got {} instead"
+                                            [expected-reward-return account (- result-balance previous-balance)])))
+                  (update stakers account { 'accrued: 0.0, 'last-claimed: epoch }))))))
 
   (defun remove-stake (epoch:integer account:string unstake-amount:decimal)
     (env-sigs
@@ -343,26 +356,25 @@
           (unstake-result (expect "unstake failed, error caught" true (with-applied-env (kaddex.staking.unstake account unstake-amount))))
           (unstake-success (!= (take 4 unstake-result) "FAIL"))
         )
-        (cond
-          ((!= unstake-success expect-success)
-           (record-trace epoch account 'remove-stake false (format "Expected unstake success: {} (in: {}, requested: {}, unlocked: {}), actual unstake success: {}" [ expect-success in unstake-amount unlocked-stake unstake-success ])))
-          ((not unstake-success)
-           (record-trace epoch account 'remove-stake true (format "Expected unstake success: {} (in: {}, requested: {}, unlocked: {}), actual unstake success: {}" [ expect-success in unstake-amount unlocked-stake unstake-success ])))
-          (let ((result-balance (kaddex.kdx.get-balance account)))
-            (if (= result-balance expected-balance)
-              (record-trace epoch account 'remove-stake true
-                (format "removed {}'s stake ({} stake - {} penalty = {} out | before: {} staked {} unlocked, after: {} staked), checks out"
-                  [account unstake-amount unstake-penalty expected-stake-return stake-amount unlocked-stake (- stake-amount unstake-amount)]))
-              (record-trace epoch account 'remove-stake false
-                (format "Expected {} KDX out when unstaking {} from {}, got {} instead"
-                  [expected-stake-return unstake-amount account (- result-balance previous-balance)])))
-            (delta-stake-total (- 0.0 unstake-amount))
-            (update stakers account
-              { 'amount: (- stake-amount unstake-amount)
-              , 'accrued: accrued
-              , 'in: (not unstaking-all)
-              , 'added-epochs: (if unstaking-all [] (+ prev-added-epochs [epoch]))
-              , 'added-amounts: (if unstaking-all [] (+ prev-added-amounts [(- stake-amount unstake-amount)]))}))))))
+        (if (!= unstake-success expect-success)
+            (record-trace epoch account 'remove-stake false (format "Expected unstake success: {} (in: {}, requested: {}, unlocked: {}), actual unstake success: {}" [ expect-success in unstake-amount unlocked-stake unstake-success ]))
+            (if (not unstake-success)
+                (record-trace epoch account 'remove-stake true (format "Expected unstake success: {} (in: {}, requested: {}, unlocked: {}), actual unstake success: {}" [ expect-success in unstake-amount unlocked-stake unstake-success ]))
+                (let ((result-balance (kaddex.kdx.get-balance account)))
+                  (if (= result-balance expected-balance)
+                      (record-trace epoch account 'remove-stake true
+                                    (format "removed {}'s stake ({} stake - {} penalty = {} out | before: {} staked {} unlocked, after: {} staked), checks out"
+                                            [account unstake-amount unstake-penalty expected-stake-return stake-amount unlocked-stake (- stake-amount unstake-amount)]))
+                      (record-trace epoch account 'remove-stake false
+                                    (format "Expected {} KDX out when unstaking {} from {}, got {} instead"
+                                            [expected-stake-return unstake-amount account (- result-balance previous-balance)])))
+                  (delta-stake-total (- 0.0 unstake-amount))
+                  (update stakers account
+                          { 'amount: (- stake-amount unstake-amount)
+                            , 'accrued: accrued
+                            , 'in: (not unstaking-all)
+                            , 'added-epochs: (if unstaking-all [] (+ prev-added-epochs [epoch]))
+                            , 'added-amounts: (if unstaking-all [] (+ prev-added-amounts [(- stake-amount unstake-amount)]))})))))))
 
   (defun swap-cycle
     (tokenA:module{fungible-v2}
