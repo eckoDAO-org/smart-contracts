@@ -82,9 +82,6 @@
 (load "../kadenaswap/exchange.pact")
 (commit-tx)
 
-;; Revert back to Pact 4.4 behavior
-(env-exec-config [])
-
 (begin-tx)
 (kaddex.exchange.set-contract-lock false)
 (commit-tx)
@@ -108,10 +105,10 @@
 (load "tokens/skdx.pact")
 (load "tokens/vkdx.pact")
 
-(env-gasmodel 'table)
-(env-gaslimit 200000000)
+;; (env-gasmodel 'table)
+;; (env-gaslimit 200000000)
 (load "wrapper.pact")
-(env-gas)
+;; (env-gas)
 
 (test-capability (kaddex.kdx.GOVERNANCE))
 (kaddex.kdx.update-mint-cap 10.0)
@@ -122,6 +119,9 @@
 (env-chain-data { 'chain-id: "0" })
 
 (kaddex.kdx.set-contract-lock false)
+(kaddex.wrapper.set-contract-lock false)
+(kaddex.alchemist.set-contract-lock false)
+(kaddex.exchange.set-contract-lock false)
 
 (expect "Mint success" 1.0
   (kaddex.kdx.mint 'network-rewards 'bob (read-keyset 'bob) 1.0))
@@ -139,6 +139,13 @@
 (env-dynref kaddex.swap-callable-v1 kaddex.noop-callable)
 
 (commit-tx)
+
+(begin-tx)
+(load "liquidity-helper.pact")
+(commit-tx)
+
+;; Revert back to Pact 4.4 behavior
+(env-exec-config [])
 
 ;; test upgradeability
 ;; (begin-tx "Test upgradeability")
