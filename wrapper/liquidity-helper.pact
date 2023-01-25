@@ -131,11 +131,11 @@
         ;; add the liquidity as normal
         (if use-wrapper
             (if order-ok
-                (exchange.add-liquidity token-in token-other amount-in-liq amount-other amount-in-min amount-other-min sender to to-guard)
-                (exchange.add-liquidity token-other token-in amount-other amount-in-liq amount-other-min amount-in-min sender to to-guard))
-            (if order-ok
                 (wrapper.add-liquidity token-in token-other amount-in-liq amount-other amount-in-min amount-other-min sender to to-guard)
                 (wrapper.add-liquidity token-other token-in amount-other amount-in-liq amount-other-min amount-in-min sender to to-guard))
+            (if order-ok
+                (exchange.add-liquidity token-in token-other amount-in-liq amount-other amount-in-min amount-other-min sender to to-guard)
+                (exchange.add-liquidity token-other token-in amount-other amount-in-liq amount-other-min amount-in-min sender to to-guard))
             )
         )
       )
