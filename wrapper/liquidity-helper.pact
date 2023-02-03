@@ -1,12 +1,9 @@
-;;
-;;
-;;
-
 (namespace (read-msg 'ns))
 
 (module liquidity-helper GOVERNANCE
 
-  (defcap GOVERNANCE () true)
+  (defcap GOVERNANCE ()
+    (enforce-guard (keyset-ref-guard 'kaddex-wrapper-admin)))
 
   (defschema account
       account:string
@@ -15,10 +12,10 @@
 
   (defcap ACCOUNT_ACCESS (pair-key:string)
     true)
-  (defun enforce-account-access (pair-key:string)
+  (defun enforce-account-access (pair-key:string seed:integer)
     (require-capability (ACCOUNT_ACCESS pair-key)))
-  (defun create-account-guard (pair-key:string)
-    (create-user-guard (enforce-account-access pair-key)))
+  (defun create-account-guard (pair-key:string seed:integer)
+    (create-user-guard (enforce-account-access pair-key seed)))
 
   (defun get-pair-key:string (tokenA:module{fungible-v2} tokenB:module{fungible-v2})
     (exchange.get-pair-key tokenA tokenB))
@@ -26,22 +23,31 @@
   (defun get-or-create-temp-account:{account} (tokenA:module{fungible-v2} tokenB:module{fungible-v2})
          (let ((pair-key (get-pair-key tokenA tokenB)))
            (with-default-read temporary-accounts pair-key
-             { 'account: "", 'guard: (create-account-guard pair-key) }
+             { 'account: "", 'guard: (create-account-guard "" -1) }
              { 'account := account, 'guard := guard }
              (if (!= account "")
                  { 'account: account, 'guard: guard }
-                 (let* ((account-name (create-principal guard))
-                        (account-rec { 'account: account-name, 'guard: guard }))
-                   (tokenA::create-account account-name guard)
-                   (tokenB::create-account account-name guard)
-                   (with-capability (ACCOUNT_ACCESS pair-key)
-                     (enforce-guard (at 'guard (tokenA::details account-name)))
-                     (enforce-guard (at 'guard (tokenB::details account-name))))
-                   (insert temporary-accounts pair-key
-                           account-rec)
-                   account-rec
-                   )
-                 )
+                 (create-temp-account-with-seed tokenA tokenB 0))
+             )
+           ))
+
+  (defun create-temp-account-with-seed:{account} (tokenA:module{fungible-v2} tokenB:module{fungible-v2} seed:integer)
+         (let ((pair-key (get-pair-key tokenA tokenB)))
+           (with-default-read temporary-accounts pair-key
+             { 'account: "" }
+             { 'account := account }
+             (enforce (= account "") "liquidity-helper: temporary account already exists for pair")
+             (let* ((account-guard (create-account-guard pair-key seed))
+                    (account-name (create-principal account-guard))
+                    (account-rec { 'account: account-name, 'guard: account-guard }))
+               (tokenA::create-account account-name account-guard)
+               (tokenB::create-account account-name account-guard)
+               (with-capability (ACCOUNT_ACCESS pair-key)
+                 (enforce-guard (at 'guard (tokenA::details account-name)))
+                 (enforce-guard (at 'guard (tokenB::details account-name))))
+               (insert temporary-accounts pair-key account-rec)
+               account-rec
+               )
              )
            ))
 
@@ -166,16 +172,18 @@
     (let* (
            (pair-key (get-pair-key token-out token-other))
            (temp-account (get-or-create-temp-account token-out token-other))
-           (initial-temp-out-balance (token-out::get-balance (at 'account temp-account)))
-           (initial-temp-other-balance (token-other::get-balance (at 'account temp-account)))
+           (tmp-acc (at 'account temp-account))
+           (tmp-guard (at 'guard temp-account))
+           (initial-temp-out-balance (token-out::get-balance tmp-acc))
+           (initial-temp-other-balance (token-other::get-balance tmp-acc))
            (order-ok (exchange.is-canonical token-out token-other))
            (remove-result (if use-wrapper
                               (if order-ok
-                                  (wrapper.remove-liquidity token-out token-other requested-liquidity amount-out-min-liquidity amount-other-min-liquidity sender (at 'account temp-account) (at 'guard temp-account) wants-kdx-rewards)
-                                  (wrapper.remove-liquidity token-other token-out requested-liquidity amount-other-min-liquidity amount-out-min-liquidity sender (at 'account temp-account) (at 'guard temp-account) wants-kdx-rewards))
+                                  (wrapper.remove-liquidity token-out token-other requested-liquidity amount-out-min-liquidity amount-other-min-liquidity sender tmp-acc tmp-guard wants-kdx-rewards)
+                                  (wrapper.remove-liquidity token-other token-out requested-liquidity amount-other-min-liquidity amount-out-min-liquidity sender tmp-acc tmp-guard wants-kdx-rewards))
                               (if order-ok
-                                  (exchange.remove-liquidity token-out token-other requested-liquidity amount-out-min-liquidity amount-other-min-liquidity sender (at 'account temp-account) (at 'guard temp-account))
-                                  (exchange.remove-liquidity token-other token-out requested-liquidity amount-other-min-liquidity amount-out-min-liquidity sender (at 'account temp-account) (at 'guard temp-account)))
+                                  (exchange.remove-liquidity token-out token-other requested-liquidity amount-out-min-liquidity amount-other-min-liquidity sender tmp-acc tmp-guard)
+                                  (exchange.remove-liquidity token-other token-out requested-liquidity amount-other-min-liquidity amount-out-min-liquidity sender tmp-acc tmp-guard))
                               ))
            )
       (let* ( ;; perform the swap
@@ -189,15 +197,15 @@
              (pair-account (at 'account (exchange.get-pair token-out token-other)))
              )
 
-        (install-capability (token-other::TRANSFER (at 'account temp-account) pair-account amount-other))
+        (install-capability (token-other::TRANSFER tmp-acc pair-account amount-other))
         (with-capability (ACCOUNT_ACCESS pair-key)
-          (let* ((swap-result (exchange.swap-exact-in amount-other amount-out-min-swap [token-other token-out] (at 'account temp-account) to to-guard))
+          (let* ((swap-result (exchange.swap-exact-in amount-other amount-out-min-swap [token-other token-out] tmp-acc to to-guard))
                  (swap-amount (at 'amount (at 1 swap-result))))
-            (install-capability (token-out::TRANSFER (at 'account temp-account) to amount-out-before))
-            (token-out::transfer-create (at 'account temp-account) to to-guard amount-out-before)
+            (install-capability (token-out::TRANSFER tmp-acc to amount-out-before))
+            (token-out::transfer-create tmp-acc to to-guard amount-out-before)
             (let (
-                  (final-temp-out-balance (token-out::get-balance (at 'account temp-account)))
-                  (final-temp-other-balance (token-other::get-balance (at 'account temp-account)))
+                  (final-temp-out-balance (token-out::get-balance tmp-acc))
+                  (final-temp-other-balance (token-other::get-balance tmp-acc))
                   )
               (enforce (and (= initial-temp-out-balance final-temp-out-balance)
                             (= initial-temp-other-balance final-temp-other-balance)) "Conservation of mass")
@@ -209,7 +217,5 @@
       )
     )
   )
-
-;; FIXME: possible "DoS" by create-account the principal acc before this contract for only one or two tokens -- if the account exists, just validate principal yourself
 
 (create-table temporary-accounts)

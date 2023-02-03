@@ -539,6 +539,42 @@
 
 (commit-tx)
 
+(begin-tx "create-account DoS attempt")
+
+(env-sigs [])
+
+(expect-failure
+ "Reserved protocol guard violation: u"
+ (coin.create-account (create-principal (kaddex.liquidity-helper.create-account-guard (kaddex.exchange.get-pair-key coin kaddex.abc) 0)) (read-keyset "bob")))
+
+(expect
+ "create-account works with the right guard"
+ (let ((g (kaddex.liquidity-helper.create-account-guard (kaddex.exchange.get-pair-key coin kaddex.abc) 0)))
+   (coin.create-account (create-principal g) g))
+ "Write succeeded")
+
+(expect
+ "squatting account on a token that doesn't validate-principal"
+ (let ((g (kaddex.liquidity-helper.create-account-guard (kaddex.exchange.get-pair-key coin kaddex.abc) 0)))
+   (kaddex.abc.create-account (create-principal g) g))
+ "Write succeeded")
+
+;; now these should fail
+;; (kaddex.liquidity-helper.get-or-create-temp-account coin kaddex.abc)
+;; (kaddex.liquidity-helper.create-temp-account-with-seed coin kaddex.abc 0)
+
+(expect
+ "creating account with another seed works"
+ (at 'account (kaddex.liquidity-helper.create-temp-account-with-seed coin kaddex.abc 1))
+ (create-principal (kaddex.liquidity-helper.create-account-guard (kaddex.exchange.get-pair-key coin kaddex.abc) 1)))
+
+(expect
+ "get-or-create-temp-account now works"
+ (at 'account (kaddex.liquidity-helper.get-or-create-temp-account coin kaddex.abc))
+ (create-principal (kaddex.liquidity-helper.create-account-guard (kaddex.exchange.get-pair-key coin kaddex.abc) 1)))
+
+(commit-tx)
+
 (begin-tx "remove-liquidity-one-sided with exchange")
 
 (env-sigs
