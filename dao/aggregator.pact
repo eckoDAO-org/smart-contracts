@@ -33,11 +33,11 @@
 
   (defcap GOVERNANCE ()
     (enforce-guard
-      (keyset-ref-guard 'kaddex-ns-admin )))
+      (keyset-ref-guard 'kaddex-aggregator-admin )))
 
   (defcap OPS ()
     (enforce-guard
-      (keyset-ref-guard 'kaddex-ns-ops )))
+      (keyset-ref-guard 'kaddex-aggregator-ops )))
 
   (defcap PRIVILEGE-GUARD (action:string)
       @event
@@ -228,10 +228,13 @@
   )
 
   (defun getShift:decimal (multiplier:decimal X:decimal)
-    @doc "shift formula"
-    (require-capability (AGGREGATE))
-    (round (- (^ (/ (- multiplier C) S) (/ 1 Z)) X) 10)
-  )
+     @doc "shift formula"
+     (require-capability (AGGREGATE))
+     (let
+       ((verified-multiplier (if (< multiplier C) C multiplier)))
+       (round (- (^ (/ (- verified-multiplier C) S) (/ 1 Z)) X) 10)
+     )
+   )
 
   (defun getMultiplierAfterNewStake:decimal (old-staked-amount:decimal current-multiplier:decimal new-staked-amount:decimal)
     @doc "formula to balance shift and multiplier after a new action of staking is made"

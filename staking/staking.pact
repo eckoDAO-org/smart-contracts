@@ -1,9 +1,9 @@
 (namespace (read-msg 'ns))
 
 (module staking GOVERNANCE
-  (defcap GOVERNANCE () (enforce-guard (keyset-ref-guard 'kaddex-ns-admin)))
+  (defcap GOVERNANCE () (enforce-guard (keyset-ref-guard 'kaddex-staking-admin)))
 
-  (defcap OPS () (enforce-guard (keyset-ref-guard 'kaddex-ops-keyset)))
+  (defcap OPS () (enforce-guard (keyset-ref-guard 'kaddex-staking-ops)))
 
   ;; this is a simple global lock that can be toggled by the operators to pause the contract if necessary
   (defschema contract-lock-status
@@ -55,10 +55,10 @@
   (defcap AGGREGATOR_NOTIFY () true)
 
   (defun enforce-wrapping () (require-capability (WRAPPING)))
-  (defun enforce-account-access (token:module{fungible-v2} name:string)
-    (require-capability (HOLDING_ACCOUNT (format-token token) name)))
-  (defun enforce-sweeping (tokenA:module{fungible-v2} tokenB:module{fungible-v2})
-    (require-capability (SWEEPING (format-token tokenA) (format-token tokenB))))
+  (defun enforce-account-access (token:string name:string)
+    (require-capability (HOLDING_ACCOUNT token name)))
+  (defun enforce-sweeping (tokenA:string tokenB:string)
+    (require-capability (SWEEPING tokenA tokenB)))
   (defun enforce-aggregator-update () (require-capability (AGGREGATOR_NOTIFY)))
 
   (defcap INTERNAL ()
@@ -141,12 +141,12 @@
   (defconst PAST_EPOCH:time (time "1970-01-01T00:00:00Z"))
 
   ;; Module guard for fungible-v2 accounts.
-  (defun token-guard:guard (token:module{fungible-v2} account:string)
+  (defun token-guard:guard (token:string account:string)
     (create-user-guard (enforce-account-access token account)))
   ;; Module guard for Alchemist permission.
   (defun wrap-guard:guard () (create-user-guard (enforce-wrapping)))
   ;; Module guard for feeTo LP token accounts.
-  (defun fee-guard:guard (tokenA:module{fungible-v2} tokenB:module{fungible-v2})
+  (defun fee-guard:guard (tokenA:string tokenB:string)
     (create-user-guard (enforce-sweeping tokenA tokenB)))
   (defun aggregator-guard:guard () (create-user-guard (enforce-aggregator-update)))
 
@@ -157,8 +157,9 @@
   (defun init ()
     "Initialize the module."
     ;; Create KDX and sKDX accounts.
-    (kdx.create-account KDX_BANK (token-guard kdx KDX_BANK))
-    (skdx.create-account KDX_BANK (token-guard skdx KDX_BANK))
+    (kdx.create-account KDX_BANK (token-guard (format-token kdx) KDX_BANK))
+    (with-capability (HOLDING_ACCOUNT (format-token kdx) KDX_BANK) ;; We need to pass the kdx guard here
+      (skdx.create-account KDX_BANK (token-guard (format-token skdx) KDX_BANK)))
     ;; Insert the contract lock row.
     (insert contract-lock CONTRACT_LOCK_KEY {'lock: false})
     ;; Insert the pool state row. Also makes sure init can't be called more than
@@ -362,6 +363,7 @@
         (if (<= net-out 0.0) "Skipping zero out transfer"
           (with-capability (HOLDING_ACCOUNT (format-token kaddex.skdx) KDX_BANK)
           (with-capability (WRAPPING)
+            (install-capability (kdx.UNWRAP "kaddex.skdx" KDX_BANK account net-out))
             (alchemist.unwrap net-out kaddex.skdx KDX_BANK account g))))
         ;; Reset rollover to 0. Mark last claim event.
         (update stake-table account
@@ -416,7 +418,7 @@
           (with-capability (INTERNAL)
           (with-capability (HOLDING_ACCOUNT (format-token kaddex.skdx) KDX_BANK)
           (with-capability (WRAPPING)
-            (alchemist.unwrap stake-penalty kaddex.skdx account KDX_BANK (token-guard kdx KDX_BANK))
+            (alchemist.unwrap stake-penalty kaddex.skdx account KDX_BANK (token-guard (format-token kdx) KDX_BANK))
             (record-burn 'stake account stake-penalty)))))
         ;; If the user has any net KDX out, unwrap that amount from their sKDX
         ;; account into their KDX account.
@@ -426,8 +428,8 @@
             (alchemist.unwrap net-unstake kaddex.skdx account account g))))
         ;; Inform the aggregator of an unstake event. Commented in the REPL as
         ;; the aggregator isn't integrated into here.
-        ; (with-capability (AGGREGATOR_NOTIFY)
-        ;  (kaddex.aggregator.aggregate-unstake account unstake-amount))
+        (with-capability (AGGREGATOR_NOTIFY)
+          (kaddex.aggregator.aggregate-unstake account unstake-amount))
         ;; Reset the user's effective-start, and decrement their staked amount
         ;; by their requested unstake amount.
         (update stake-table account
@@ -457,11 +459,11 @@
         { 'account := current-account }
         (if (= current-account "") ;; Continue only if the token isn't already registered
           (let ((x 0)) ;; throwaway let for many-statement if clause
-            (token::create-account account-name (token-guard token account-name)) ;; Create token account
+            (token::create-account account-name (token-guard (format-token token) account-name)) ;; Create token account
             (if (!= token kdx) ;; If token isn't KDX, create KDX account with same name/guard.
-              (kdx.create-account account-name (token-guard kdx account-name)) {})
+              (kdx.create-account account-name (token-guard (format-token kdx) account-name)) {})
             (write token-table token-name ;; Create the token record.
-              { 'account: account-name, 'token: token, 'guard: (token-guard token account-name) }))
+              { 'account: account-name, 'token: token, 'guard: (token-guard (format-token token) account-name) }))
           {}))))
 
   (defun register-pair
@@ -490,17 +492,17 @@
         ;; The guards for these accounts are identical, as remove-liquidity takes
         ;; one guard and one account name for the output. We choose the canonical
         ;; left-hand-side token to create the guard.
-        (token0::create-account pair-account-name (token-guard tokenA pair-account-name))
-        (token1::create-account pair-account-name (token-guard tokenA pair-account-name))
+        (token0::create-account pair-account-name (token-guard (format-token tokenA) pair-account-name))
+        (token1::create-account pair-account-name (token-guard (format-token tokenA) pair-account-name))
         ;; Take ownership of feeTo account if not owned already.
-        (exchange.rotate-fee-guard key (fee-guard tokenA tokenB))
+        (exchange.rotate-fee-guard key (fee-guard (format-token tokenA) (format-token tokenB)))
         ;; Create pair record.
         (insert pair-table key
           { 'key: key
           , 'fee-account: fee-account
-          , 'fee-guard: (fee-guard tokenA tokenB)
+          , 'fee-guard: (fee-guard (format-token tokenA) (format-token tokenB))
           , 'pair-account: pair-account-name
-          , 'pair-guard: (token-guard tokenA pair-account-name)}))))
+          , 'pair-guard: (token-guard (format-token tokenA) pair-account-name)}))))
 
   ;; Utility functions
   (defun max:decimal (a:decimal b:decimal) (if (> a b) a b))
@@ -592,8 +594,8 @@
         )
         ;; Inform the aggregator of a stake being added. Commented out in the REPL
         ;; as the aggregator isn't integrated into this repo.
-        ; (with-capability (AGGREGATOR_NOTIFY)
-        ;   (kaddex.aggregator.aggregate-stake account to-add))
+        (with-capability (AGGREGATOR_NOTIFY)
+          (kaddex.aggregator.aggregate-stake account to-add))
         (update stake-table account
           { 'amount: (+ to-add prev-amount)
           , 'last-stake: now
@@ -663,7 +665,7 @@
     "Given an arbitrary amount of some arbitrary token, yield KDX out to the \
     \ provided to account."
     (require-capability (INTERNAL))
-    (if (= kdx token-in) ;; If asked to swap KDX to KDX, just transfer it.
+    (if (= "kaddex.kdx" (format-token token-in)) ;; If asked to swap KDX to KDX, just transfer it.
       (if (= from to) amount-in ;; completely skip if from == to
         (let ((x 0))
           (install-capability (kdx.TRANSFER from to amount-in))
@@ -679,7 +681,7 @@
         (let ((swap-result (exchange.swap-exact-in
             amount-in 0.0 ;; TODO: Supply a minimum amount out
             (unroll-path token-in path) from to to-guard)))
-          (enforce (= (format "{}" [kdx]) (at 'token (at (length path) swap-result))) "Swap output must be kdx")
+          (enforce (= (format-token kdx) (at 'token (at (length path) swap-result))) "Swap output must be kdx")
           (at 'amount (at (length path) swap-result)) ;; Extract amount out from swap result
         ))))
 
@@ -733,7 +735,7 @@
                         token
                         (token::get-balance account)
                         account
-                        account (token-guard kdx account)))))
+                        account (token-guard (format-token kdx) account)))))
                     ;; Transfer swap-out KDX from the per-token KDX account to the
                     ;; KDX_BANK KDX account.
                     (install-capability (kdx.TRANSFER account KDX_BANK swap-out))
@@ -755,7 +757,8 @@
               (install-capability (kdx.TRANSFER KDX_BANK (alchemist.get-holder-account kaddex.skdx) total-out))
               (with-capability (HOLDING_ACCOUNT (format-token kaddex.kdx) KDX_BANK)
               (with-capability (WRAPPING)
-                (alchemist.wrap total-out kaddex.skdx KDX_BANK KDX_BANK (token-guard skdx KDX_BANK))))
+                (install-capability (kdx.WRAP "kaddex.skdx" KDX_BANK KDX_BANK total-out))
+                (alchemist.wrap total-out kaddex.skdx KDX_BANK KDX_BANK (token-guard (format-token skdx) KDX_BANK))))
               ;; Record fees collected. revenue-per-kdx is increased by the KDX
               ;; output divided by the amount of KDX staked in the pool.
               (update state-table STATE_KEY
@@ -883,4 +886,9 @@
    (create-table token-table)
    (create-table state-table)
    (create-table stake-table)
-   (init)])
+   (kaddex.kdx.set-contract-lock false)
+   (init)
+   (kaddex.aggregator.grant-privilege (kaddex.staking.aggregator-guard) "aggregate-stake")
+   (kaddex.aggregator.grant-privilege (kaddex.staking.aggregator-guard) "aggregate-unstake")
+   (kaddex.kdx.set-contract-lock true)
+   (set-contract-lock true)])

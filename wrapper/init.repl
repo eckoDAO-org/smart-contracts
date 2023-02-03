@@ -1,23 +1,41 @@
+;; disable Pact 4.4 changes until we update to using namespaced keysets
+;; the module code only enforces existing keysets and as long as we dont need
+;; to define a new keyset, we should be fine
+(env-exec-config ["DisablePact44"])
+
 (begin-tx "Loading root namespace and coin")
 (env-data
  { 'ns-admin-keyset: ["admin"]
  , 'ns-operate-keyset: ["operate"]
  , 'ns-genesis-keyset: { "keys": [], "pred": "="} })
 (load "../kadenaswap/root/fungible-v2.pact")
+(load "../kadenaswap/root/fungible-xchain-v1.pact")
 (load "../kadenaswap/root/coin.pact")
 (load "../kadenaswap/root/ns.pact")
 
 (env-data
   { 'kaddex-ns-user: ["kaddex-user"]
   , 'kaddex-ns-admin: ["kaddex-admin"]
-  , 'kaddex-ops-keyset: ["kaddex-ops"]
-  , 'kaddex-admin: ["kaddex-admin"]
+  , 'kaddex-wrapper-admin: ["kaddex-admin"]
+  , 'kaddex-alchemist-admin: ["kaddex-admin"]
+  , 'kaddex-wrapper-ops: ["kaddex-ops"]
+  , 'kaddex-alchemist-ops: ["kaddex-ops"]
+  , 'kaddex-exchange-admin: ["kaddex-admin"]
+  , 'kaddex-exchange-ops: ["kaddex-ops"]
+  , 'kdx-ops-keyset: ["kaddex-ops"]
+  , 'kdx-admin-keyset: ["kaddex-admin"]
   , 'ns: "kaddex"
   , 'upgrade: 0
   })
 
-(define-keyset "kaddex-ops-keyset")
-(define-keyset "kaddex-admin")
+(define-keyset "kaddex-exchange-admin")
+(define-keyset "kaddex-exchange-ops")
+(define-keyset "kaddex-alchemist-ops")
+(define-keyset "kaddex-alchemist-admin")
+(define-keyset "kaddex-wrapper-ops")
+(define-keyset "kaddex-wrapper-admin")
+(define-keyset "kdx-ops-keyset")
+(define-keyset "kdx-admin-keyset")
 (env-keys ["operate", "kaddex-user", "kaddex-admin", "kaddex-ops"])
 
 (load "../kadenaswap/ns.pact")
@@ -59,23 +77,38 @@
 (define-keyset 'alice)
 (define-keyset 'fee-to-addr)
 
-(define-keyset 'kdx-admin-keyset)
 
-
-(env-keys ["operate", "kaddex-user", "kaddex-admin", "bob", "alice"])
+(env-keys ["operate", "kaddex-user", "kaddex-ops", "kaddex-admin", "bob", "alice"])
 (load "../kadenaswap/exchange.pact")
+(commit-tx)
+
+(begin-tx)
+(kaddex.exchange.set-contract-lock false)
+(commit-tx)
+
+(begin-tx)
 
 (load "tokens/supply-control-v1.pact")
-(load "tokens/special-accounts-v2.pact")
+(load "tokens/special-accounts-v1.pact")
 (load "tokens/kdx.pact")
+(commit-tx)
+(begin-tx)
+(kaddex.kdx.set-contract-lock false)
+(commit-tx)
+(begin-tx)
 (load "tokens/alchemist.pact")
+(commit-tx)
+(begin-tx)
+(kaddex.alchemist.set-contract-lock false)
+(commit-tx)
+(begin-tx)
 (load "tokens/skdx.pact")
 (load "tokens/vkdx.pact")
 
-(env-gasmodel 'table)
-(env-gaslimit 200000000)
+;; (env-gasmodel 'table)
+;; (env-gaslimit 200000000)
 (load "wrapper.pact")
-(env-gas)
+;; (env-gas)
 
 (test-capability (kaddex.kdx.GOVERNANCE))
 (kaddex.kdx.update-mint-cap 10.0)
@@ -84,6 +117,11 @@
 ;; Test mint cap
 
 (env-chain-data { 'chain-id: "0" })
+
+(kaddex.kdx.set-contract-lock false)
+(kaddex.wrapper.set-contract-lock false)
+(kaddex.alchemist.set-contract-lock false)
+(kaddex.exchange.set-contract-lock false)
 
 (expect "Mint success" 1.0
   (kaddex.kdx.mint 'network-rewards 'bob (read-keyset 'bob) 1.0))
@@ -101,6 +139,13 @@
 (env-dynref kaddex.swap-callable-v1 kaddex.noop-callable)
 
 (commit-tx)
+
+(begin-tx)
+(load "liquidity-helper.pact")
+(commit-tx)
+
+;; Revert back to Pact 4.4 behavior
+(env-exec-config [])
 
 ;; test upgradeability
 ;; (begin-tx "Test upgradeability")

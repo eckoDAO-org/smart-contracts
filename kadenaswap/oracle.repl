@@ -1,3 +1,7 @@
+;; disable Pact 4.4 changes until we update to using namespaced keysets
+;; the module code only enforces existing keysets and as long as we dont need
+;; to define a new keyset, we should be fine
+(env-exec-config ["DisablePact44"])
 
 (begin-tx)
 (env-data
@@ -5,18 +9,21 @@
  , 'ns-operate-keyset: ["operate"]
  , 'ns-genesis-keyset: { "keys": [], "pred": "="} })
 (load "root/fungible-v2.pact")
+(load "root/fungible-xchain-v1.pact")
 (load "root/coin.pact")
 (load "root/ns.pact")
 
 (env-data
   { 'kaddex-ns-user: ["kaddex-user"]
   , 'kaddex-ns-admin: ["kaddex-admin"]
-  , 'kaddex-ops-keyset: ["kaddex-ops"]
+  , 'kaddex-exchange-admin: ["kaddex-admin"]
+  , 'kaddex-exchange-ops: ["kaddex-ops"]
   , 'ns: "kaddex"
   , 'upgrade: 0
   , 'initial-lock: false
   })
-(define-keyset "kaddex-ops-keyset")
+(define-keyset 'kaddex-exchange-admin)
+(define-keyset 'kaddex-exchange-ops)
 (env-keys ["operate", "kaddex-user", "kaddex-admin"])
 
 (load "ns.pact")
@@ -27,6 +34,9 @@
 
 (load "swap-callable.pact")
 (commit-tx)
+
+;; Revert back to Pact 4.4 behavior
+(env-exec-config [])
 
 ;; test init-issuer guard
 (begin-tx)

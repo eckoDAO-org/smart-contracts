@@ -1,5 +1,8 @@
 ;; guards.pact
 
+(ns.write-registry "util" ns.GUARD_FAILURE true)
+(define-namespace "util" ns.GUARD_SUCCESS ns.GUARD_FAILURE)
+
 (namespace 'util)
 
 (module guards AUTONOMOUS

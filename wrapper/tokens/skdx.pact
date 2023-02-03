@@ -44,7 +44,7 @@
   ; Capabilities
 
   (defcap GOVERNANCE ()
-    (enforce-keyset 'kaddex-ns-admin))
+    (enforce-keyset 'kdx-admin-keyset))
 
   (defcap BURN
     ( sender:string
@@ -173,6 +173,10 @@
 
   (defun create-account:string (account:string guard:guard)
     @model [ (property (valid-account account)) ]
+
+    (let ((kdx-acc (kdx.details account)))
+      (enforce (= account (at 'account kdx-acc)) "kdx account must exist")
+      (enforce-guard (at 'guard kdx-acc)))
 
     (validate-account account)
     (enforce-reserved account guard)

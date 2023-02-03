@@ -43,11 +43,11 @@
 
   (defcap GOVERNANCE ()
     (enforce-guard
-      (keyset-ref-guard 'kaddex-ns-admin )))
+      (keyset-ref-guard 'kaddex-dao-admin )))
 
   (defcap OPS ()
     (enforce-guard
-      (keyset-ref-guard 'kaddex-ns-ops )))
+      (keyset-ref-guard 'kaddex-dao-ops )))
 
   (defcap INTERNAL ()
     "mark some functions as internal only"
@@ -55,7 +55,7 @@
 
   (defcap ACCOUNT_GUARD ( account:string )
     @doc " Look up the guard for an account, required to withdraw from the contract. "
-    (enforce-guard (at 'guard (coin.details account))) "Keyset Failure")
+    (enforce-guard (at 'guard (kaddex.kdx.details account))) "Keyset Failure")
 
   (defcap PROPOSAL_PERIOD
       ( proposal-id:string

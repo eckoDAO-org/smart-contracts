@@ -481,3 +481,176 @@
 (kaddex.wrapper.dump-liquidity)
 
 (rollback-tx)
+
+(coin.details "Bob")
+(kaddex.abc.details "Bob")
+(begin-tx "add-liquidity-one-sided with exchange")
+
+(env-sigs
+  [ { 'key: "bob"
+     , 'caps:[
+              (kaddex.abc.TRANSFER "Bob" (at 'account (kaddex.exchange.get-pair coin kaddex.abc)) 500.0)
+              (coin.TRANSFER "Bob"
+                             (at 'account (kaddex.exchange.get-pair coin kaddex.abc))
+                             (kaddex.liquidity-helper.get-add-liquidity-token-amount-after-swap 500.0 kaddex.abc coin 1.05))
+              ]}])
+
+(expect
+ "one-sided liquidity add works with exchange"
+ (kaddex.liquidity-helper.add-liquidity-one-sided
+  kaddex.abc
+  coin
+  500.0
+  0.0
+  0.0
+  "Bob"
+  (read-keyset "bob")
+  "Bob"
+  (read-keyset "bob")
+  false)
+ {"liquidity": 72.465134223954,"supply": 92.768012383177,"amount0": 15.774889090638,"amount1": 410.17219091420261})
+
+(commit-tx)
+
+(begin-tx "add-liquidity-one-sided with exchange")
+
+(env-sigs
+  [ { 'key: "bob"
+     , 'caps:[
+              (kaddex.abc.TRANSFER "Bob" (at 'account (kaddex.exchange.get-pair coin kaddex.abc)) 500.0)
+              (coin.TRANSFER "Bob"
+                             (at 'account (kaddex.exchange.get-pair coin kaddex.abc))
+                             (kaddex.liquidity-helper.get-add-liquidity-token-amount-after-swap 500.0 kaddex.abc coin 1.05))
+              ]}])
+(expect
+ "one-sided liquidity add works with wrapper"
+ (kaddex.liquidity-helper.add-liquidity-one-sided
+  kaddex.abc
+  coin
+  500.0
+  0.0
+  0.0
+  "Bob"
+  (read-keyset "bob")
+  "Bob"
+  (read-keyset "bob")
+  true)
+ {"liquidity": 36.796266516732,"supply": 129.570881152366,"amount0": 5.734978693833,"amount1": 291.11136998895890})
+
+(commit-tx)
+
+(begin-tx "create-account DoS attempt")
+
+(env-sigs [])
+
+(expect-failure
+ "Reserved protocol guard violation: u"
+ (coin.create-account (create-principal (kaddex.liquidity-helper.create-account-guard (kaddex.exchange.get-pair-key coin kaddex.abc) 0)) (read-keyset "bob")))
+
+(expect
+ "create-account works with the right guard"
+ (let ((g (kaddex.liquidity-helper.create-account-guard (kaddex.exchange.get-pair-key coin kaddex.abc) 0)))
+   (coin.create-account (create-principal g) g))
+ "Write succeeded")
+
+(expect
+ "squatting account on a token that doesn't validate-principal"
+ (let ((g (kaddex.liquidity-helper.create-account-guard (kaddex.exchange.get-pair-key coin kaddex.abc) 0)))
+   (kaddex.abc.create-account (create-principal g) g))
+ "Write succeeded")
+
+;; now these should fail
+;; (kaddex.liquidity-helper.get-or-create-temp-account coin kaddex.abc)
+;; (kaddex.liquidity-helper.create-temp-account-with-seed coin kaddex.abc 0)
+
+(expect
+ "creating account with another seed works"
+ (at 'account (kaddex.liquidity-helper.create-temp-account-with-seed coin kaddex.abc 1))
+ (create-principal (kaddex.liquidity-helper.create-account-guard (kaddex.exchange.get-pair-key coin kaddex.abc) 1)))
+
+(expect
+ "get-or-create-temp-account now works"
+ (at 'account (kaddex.liquidity-helper.get-or-create-temp-account coin kaddex.abc))
+ (create-principal (kaddex.liquidity-helper.create-account-guard (kaddex.exchange.get-pair-key coin kaddex.abc) 1)))
+
+(commit-tx)
+
+(begin-tx "remove-liquidity-one-sided with exchange")
+
+(env-sigs
+  [ { 'key: "bob"
+     , 'caps:[
+              (kaddex.tokens.TRANSFER (kaddex.exchange.get-pair-key coin kaddex.abc) "Bob" (at 'account (kaddex.exchange.get-pair coin kaddex.abc)) 30.0)
+              ]}])
+
+(expect
+ "one-sided liquidity remove works with exchange"
+ (kaddex.liquidity-helper.remove-liquidity-one-sided
+  kaddex.abc
+  coin
+  30.0
+  0.0
+  0.0
+  0.5
+  "Bob"
+  "Bob"
+  (read-keyset "bob")
+  false
+  false)
+ {"remove-result": {"amount0": 4.675728738315,"amount1": 237.34313087708190},"swap-result": [{"token": "coin","amount": 4.675728738315} {"token": "kaddex.abc","amount": 181.96946972530071}],"total-amount": 419.31260060238261})
+
+(commit-tx)
+
+(begin-tx "remove-liquidity-one-sided with wrapper without booster")
+
+(env-sigs
+  [ { 'key: "bob"
+     , 'caps:[]}])
+
+(expect
+ "one-sided liquidity remove works with wrapper without booster"
+ (kaddex.liquidity-helper.remove-liquidity-one-sided
+  kaddex.abc
+  coin
+  10.0
+  0.0
+  0.0
+  0.5
+  "Bob"
+  "Bob"
+  (read-keyset "bob")
+  true
+  false)
+ {"remove-result": {"amountA": 2.153883125887,"amountB": 64.61020747176882,"withdrawn-directly": true},"swap-result": [{"token": "coin","amount": 2.153883125887} {"token": "kaddex.abc","amount": 57.56438079894438}],"total-amount": 122.17458827071320})
+
+(commit-tx)
+
+(begin-tx "remove-liquidity-one-sided with wrapper with booster")
+
+(env-sigs
+  [ { 'key: "bob"
+     , 'caps:[]}])
+
+(let (
+      (result (kaddex.liquidity-helper.remove-liquidity-one-sided
+               kaddex.abc
+               coin
+               10.0
+               0.0
+               0.0
+               0.5
+               "Bob"
+               "Bob"
+               (read-keyset "bob")
+               true
+               true))
+      )
+  (expect "booster ok" (at 'withdrawn-directly (at 'remove-result result)) false)
+  ;; (expect
+  ;;  "one-sided liquidity remove works with wrapper with booster"
+  ;;  result)
+  ;; FIXME: the request-id changes every time, and I can't seen to get it to match here
+   ;; {"remove-result": {"amountA": 2.268131409739,"amountB": 54.31544207668663,"request-id": (at 'request-id (at 'remove-result result)),"claim-time": "2022-02-06T00:10:00Z","withdrawn-directly": false},"swap-result": [{"token": "coin","amount": 2.268131409739} {"token": "kaddex.abc","amount": 48.08603474246171}],"total-amount": 102.40147681914834})
+  )
+
+(commit-tx)

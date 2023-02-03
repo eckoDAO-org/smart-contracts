@@ -45,11 +45,11 @@
 
 (commit-tx)
 
-(begin-tx "Test wrapping skdx to skdx")
+(begin-tx "Test wrapping kdx to skdx")
 
 (env-sigs
   [ { 'key: "bob"
-    , 'caps: [ (kaddex.kdx.WRAP kaddex.skdx 'Bob 'Bob 1.0) ]}
+    , 'caps: [ (kaddex.kdx.WRAP "kaddex.skdx" 'Bob 'Bob 1.0) ]}
     { 'key: "wrap"
     , 'caps: [] } ])
 
@@ -75,13 +75,13 @@
 (commit-tx)
 
 
-(begin-tx "Test unwrapping skdx to skdx")
+(begin-tx "Test unwrapping skdx to kdx")
 
 (env-sigs
   [ { 'key: "bob"
     , 'caps: [
-      (kaddex.kdx.UNWRAP kaddex.skdx 'Bob 'Bob 1.0)
-      (kaddex.skdx.DEBIT "Bob")
+      (kaddex.kdx.UNWRAP "kaddex.skdx" 'Bob 'Bob 1.0)
+      (kaddex.skdx.DEBIT 'Bob)
        ]}
     { 'key: "wrap"
     , 'caps: [] }
@@ -96,7 +96,7 @@
 
 (env-sigs
   [ { 'key: "bob"
-    , 'caps: [ (kaddex.kdx.WRAP kaddex.vkdx 'Bob 'Bob 10.0) ]}
+    , 'caps: [ (kaddex.kdx.WRAP "kaddex.vkdx" 'Bob 'Bob 10.0) ]}
     { 'key: "wrap"
     , 'caps: [] } ])
 
@@ -110,7 +110,7 @@
 (env-data { 'attacker: ['attacker] })
 (env-sigs
   [ { 'key: 'attacker
-    , 'caps: [(kaddex.vkdx.DEBIT 'attacker)]}
+    , 'caps: [(kaddex.kdx.WRAP "kaddex.vkdx" (kaddex.alchemist.get-holder-account kaddex.skdx) 'attacker 1.0)]}
     { 'key: "wrap", 'caps: [] }])
 
 (expect-failure "Cannot wrap with KDX belonging to alchemist"
