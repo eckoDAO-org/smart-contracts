@@ -17,7 +17,7 @@ jobs:
   # This workflow contains a single job called "build"
   test-pact:
     # The type of runner that the job will run on
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
@@ -28,16 +28,15 @@ jobs:
         run: |
           mkdir bin
           cd bin
-          wget https://github.com/kadena-io/pact/releases/download/v4.3/pact-4.3-linux-18.04.zip
+          wget https://github.com/kadena-io/pact/releases/download/v4.4.1/pact-4.4.1-linux-20.04.zip
           unzip "pact*.zip"
           chmod +x pact
           cd ..
-      - name: Install z3 (ubuntu-18.04)
-        uses: pavpanchekha/setup-z3@0.2.0
-        with:
-          version: "4.8.10"
-          architecture: "x64"
-          distribution: "ubuntu-18.04"
+
+      - name: Install z3 (ubuntu-20.04)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y z3
 
       - name: wrapper/init.repl
         run: |

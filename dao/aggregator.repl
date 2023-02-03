@@ -14,6 +14,7 @@
 
 ;;Load Coin Contract
 (load "./root/fungible-v2.pact")
+(load "./root/fungible-xchain-v1.pact")
 (load "./root/coin.pact")
 
 ;;Load utils Contract

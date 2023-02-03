@@ -335,7 +335,7 @@
                       (record-trace epoch account 'claim-reward false
                                     (format "Expected {} out when claiming {}'s rewards, got {} instead"
                                             [expected-reward-return account (- result-balance previous-balance)])))
-                  (update stakers account { 'accrued: 0.0, 'last-claimed: epoch }))))))
+                  (update stakers account { 'accrued: 0.0, 'last-claimed: epoch })))))))
 
   (defun remove-stake (epoch:integer account:string unstake-amount:decimal)
     (env-sigs
