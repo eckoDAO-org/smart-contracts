@@ -864,6 +864,98 @@
     )
   )
 
+  (defun get-one-sided-liquidity-swap-amount:decimal
+    ( A:decimal ;; reserves of tokenA
+      T:decimal ;; total amount of tokens (A)
+    )
+    "Internal low-level function used for calculating one-sided liquidity swap amounts."
+    ;; this returns an input amount of tokens to swap for B that satisfies:
+    ;; (= (quote (- T x) A B) (compute-out x A B))
+    ;; this value needs to be truncated to the token precision (and may not
+    ;; be exact and leave some dust behind)
+    (let ((fee (- 1.0 exchange.FEE)))
+      (/ (+ (* (sqrt A)
+               (sqrt (+ (* A (* fee fee))
+                        (+ (* 2 (* A fee))
+                           (+ A
+                              (* 4 (* fee T)))))))
+            (+ (* A (* fee -1))
+               (* A -1)))
+         (* 2 fee))))
+
+  (defun get-other-side-token-amount-after-swap:decimal
+    ( amountA-total:decimal
+      tokenA:module{fungible-v2}
+      tokenB:module{fungible-v2}
+      slippage:decimal ;; this value needs to be greater than or equal to 1
+      ;; a value of 1.01 gives a 1% slippage
+    )
+    "Returns the tokenB amount to use for signing a TRANSFER capability when doing an `add-liquidity-one-sided` call."
+    ;; this function is used for signing a TRANSFER capability for tokenB
+    ;; for use with add-liquidity-one-sided. We transfer the swapped tokens
+    ;; back to the sender and then transfer from the sender to the liquidity
+    ;; pool (and thus need the TRANSFER cap for the final step)
+    (let*
+      ( (p (exchange.get-pair tokenA tokenB))
+        (reserveA (exchange.reserve-for p tokenA))
+        (amountB-in (exchange.truncate tokenB (get-one-sided-liquidity-swap-amount reserveA amountA-total)))
+        (alloc { 'token-out: tokenA
+               , 'token-in: tokenA
+               , 'out: amountB-in
+               , 'in: 0.0
+               , 'idx: 0
+               , 'pair: p
+               , 'path: [tokenB]})
+        (out-result (exchange.compute-out [alloc] tokenB))
+      )
+      ;; multiply by the slippage in case the price changes between the user
+      ;; querying this function and calling the function below
+      (exchange.truncate tokenB (* slippage (at 'out (at 0 out-result))))
+    )
+  )
+
+  (defun add-liquidity-one-sided:object
+    ( token-in:module{fungible-v2}
+      token-other:module{fungible-v2}
+      amount-in-total:decimal
+      amount-in-min:decimal
+      amount-other-min:decimal
+      sender:string
+      sender-guard:guard
+      to:string
+      to-guard:guard
+    )
+    "Adds liquidity to the tokenA/tokenB pair using only tokenA. Will automatically swap about half of the amountA-total into tokenB to provide the liquidity."
+    (enforce-contract-unlocked)
+    (enforce (and (and (> amount-in-total 0.0) (>= amount-in-min 0.0)) (>= amount-other-min 0.0)) "add-liquidity-one-sided: Values must be positive")
+    (enforce (!= sender "") "Invalid sender")
+    (enforce (!= to "") "Invalid target")
+    (token-in::enforce-unit amount-in-total)
+    (token-in::enforce-unit amount-in-min)
+    (token-other::enforce-unit amount-other-min)
+    (let*
+      ( (order-ok (exchange.is-canonical token-in token-other))
+        (p (exchange.get-pair token-in token-other))
+        (pair-account (at 'account p))
+        (reserve-in (exchange.reserve-for p token-in))
+        (swap-amount-in (exchange.truncate token-in (get-one-sided-liquidity-swap-amount reserve-in amount-in-total)))
+        (amount-in-liq (exchange.truncate token-in (- amount-in-total swap-amount-in)))
+      )
+      (enforce (>= amount-in-liq amount-in-min) "Insufficient A amount")
+      (let* ;; perform the swap
+        ( (swap-result (exchange.swap-exact-in swap-amount-in 0.0 [token-in token-other] sender sender sender-guard))
+          (amount-other (at 'amount (at 1 swap-result)))
+        )
+        (enforce (>= amount-other amount-other-min) "Insufficient B amount")
+        ;; add the liquidity as normal
+        (if order-ok
+            (add-liquidity token-in token-other amount-in-liq amount-other amount-in-min amount-other-min sender to to-guard)
+            (add-liquidity token-other token-in amount-other amount-in-liq amount-other-min amount-in-min sender to to-guard)
+        )
+      )
+    )
+  )
+
   (defun add-liquidity:object
     ( tokenA:module{fungible-v2}
       tokenB:module{fungible-v2}
