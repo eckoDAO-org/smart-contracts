@@ -179,8 +179,8 @@
            (order-ok (exchange.is-canonical token-out token-other))
            (remove-result (if use-wrapper
                               (if order-ok
-                                  (wrapper.remove-liquidity token-out token-other requested-liquidity amount-out-min-liquidity amount-other-min-liquidity sender tmp-acc tmp-guard wants-kdx-rewards)
-                                  (wrapper.remove-liquidity token-other token-out requested-liquidity amount-other-min-liquidity amount-out-min-liquidity sender tmp-acc tmp-guard wants-kdx-rewards))
+                                  (wrapper.remove-liquidity-extended token-out token-other requested-liquidity amount-out-min-liquidity amount-other-min-liquidity sender tmp-acc tmp-guard wants-kdx-rewards to to-guard)
+                                  (wrapper.remove-liquidity-extended token-other token-out requested-liquidity amount-other-min-liquidity amount-out-min-liquidity sender tmp-acc tmp-guard wants-kdx-rewards to to-guard))
                               (if order-ok
                                   (exchange.remove-liquidity token-out token-other requested-liquidity amount-out-min-liquidity amount-other-min-liquidity sender tmp-acc tmp-guard)
                                   (exchange.remove-liquidity token-other token-out requested-liquidity amount-other-min-liquidity amount-out-min-liquidity sender tmp-acc tmp-guard))

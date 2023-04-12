@@ -646,11 +646,16 @@
                true))
       )
   (expect "booster ok" (at 'withdrawn-directly (at 'remove-result result)) false)
-  ;; (expect
-  ;;  "one-sided liquidity remove works with wrapper with booster"
-  ;;  result)
-  ;; FIXME: the request-id changes every time, and I can't seen to get it to match here
-   ;; {"remove-result": {"amountA": 2.268131409739,"amountB": 54.31544207668663,"request-id": (at 'request-id (at 'remove-result result)),"claim-time": "2022-02-06T00:10:00Z","withdrawn-directly": false},"swap-result": [{"token": "coin","amount": 2.268131409739} {"token": "kaddex.abc","amount": 48.08603474246171}],"total-amount": 102.40147681914834})
+  (expect "request ok" (length (kaddex.wrapper.get-user-pending-requests "Bob")) 2)
   )
 
 (commit-tx)
+
+(env-keys ["kaddex-admin"])
+(let (
+      (req-id-0 (at 0 (kaddex.wrapper.get-user-pending-requests "Bob")))
+      (req-id-1 (at 1 (kaddex.wrapper.get-user-pending-requests "Bob")))
+      )
+  (expect "claim request target ok" (at 'to (read kaddex.wrapper.reward-claim-requests req-id-0)) "Bob")
+  (expect "claim request target ok" (at 'to (read kaddex.wrapper.reward-claim-requests req-id-1)) "Bob")
+  )
