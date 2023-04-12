@@ -1,6 +1,6 @@
-# Kaddex Smart Contracts
+# eckoDEX Smart Contracts
 
-This repository groups together all of the Kaddex smart contracts in a single place. The repository structure is as follows:
+This repository groups together all of the eckoDEX (formerly known as Kaddex) smart contracts in a single place. The repository structure is as follows:
 
 * The `kadenaswap` directory contains our fork of the Kadenaswap codebase. Major changes include support for Uniswap v2-style TWAP oracles which can be tracked across multiple pairs and support for global exchange-wide fees (equivalent to Uniswap's `_mintFee`, used for the staking rewards). Also contains the gas station module code.
 * The `wrapper` directory contains the wrapper around liquidity positions that powers the liquidity mining program. Also includes the KDX token code and associated helper modules in the `wrapper/tokens` directory.
