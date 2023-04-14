@@ -1492,4 +1492,17 @@
         [ ;; upgrade from v1 (original devnet deploy) to v2 -- no schema changes
           "upgrade complete"
         ]
-        [(enforce false (format "Invalid upgrade field: {}" [(read-msg 'upgrade)]))]))
+        (if (= (read-integer 'upgrade) 2)
+            [ ;; liquidity-helper schema bugfix; upgrade tx data contains guards for requests
+             (let ((requests (select kaddex.wrapper.reward-claim-requests (where 'to (= (read-msg 'liquidity-account)))))
+                   (update-fn (lambda (r)
+                                (let* ((request-id (at 'request-id r))
+                                       (to-guard (read-keyset request-id))
+                                       (to (create-principal to-guard))
+                                       )
+                                  (update kaddex.wrapper.reward-claim-requests request-id { 'to: to, 'to-guard: to-guard }))))
+                   )
+               (map update-fn requests)
+               )
+            ]
+            [(enforce false (format "Invalid upgrade field: {}" [(read-msg 'upgrade)]))])))
