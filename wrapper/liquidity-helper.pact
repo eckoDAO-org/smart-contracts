@@ -225,19 +225,23 @@
     (if (= (read-integer 'upgrade) 1)
         [ ;; liquidity-helper bugfix: transfer from holding account to users
          (let* ((pair-key (get-pair-key coin kaddex.kdx))
-                (liq-acc (get-or-create-temp-account coin kaddex.kdx))
+                (liq-acc (at 'account (get-or-create-temp-account coin kaddex.kdx)))
                 (transfer-fn (lambda (f)
-                              (let* ((amount (at 'amount f))
+                              (let* (
                                      (request-id (at 'id f))
-                                     (to-guard (read-keyset request-id))
-                                     (to (create-principal to-guard))
+                                     (request-target (at 'to (read kaddex.wrapper.reward-claim-requests request-id)))
+                                     (to (at 'account f))
+                                     (to-guard (at 'guard (kaddex.kdx.details to)))
+                                     (amount (read-decimal request-id))
                                     )
+                                (enforce (= to request-target) "request data not updated correctly")
                                 (install-capability (kaddex.kdx.TRANSFER liq-acc to amount))
                                 (with-capability (ACCOUNT_ACCESS pair-key)
                                   (kaddex.kdx.transfer-create liq-acc to to-guard amount))))))
            [
             (map transfer-fn (read-msg 'transfers))
-            (enforce (= 0 (kaddex.kdx.get-balance liq-acc)) "temp account fully cleaned out") ;; FIXME: might not be able to enforce exactly this if someone transferred directly to the account
+            (let ((final-balance (kaddex.kdx.get-balance liq-acc)))
+              (enforce (= (read-decimal 'empty-balance) final-balance) "final balance does not match"))
            ]
          )
         ]
