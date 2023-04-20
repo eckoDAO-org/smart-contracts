@@ -179,8 +179,8 @@
            (order-ok (exchange.is-canonical token-out token-other))
            (remove-result (if use-wrapper
                               (if order-ok
-                                  (wrapper.remove-liquidity token-out token-other requested-liquidity amount-out-min-liquidity amount-other-min-liquidity sender tmp-acc tmp-guard wants-kdx-rewards)
-                                  (wrapper.remove-liquidity token-other token-out requested-liquidity amount-other-min-liquidity amount-out-min-liquidity sender tmp-acc tmp-guard wants-kdx-rewards))
+                                  (wrapper.remove-liquidity-extended token-out token-other requested-liquidity amount-out-min-liquidity amount-other-min-liquidity sender tmp-acc tmp-guard wants-kdx-rewards to to-guard)
+                                  (wrapper.remove-liquidity-extended token-other token-out requested-liquidity amount-other-min-liquidity amount-out-min-liquidity sender tmp-acc tmp-guard wants-kdx-rewards to to-guard))
                               (if order-ok
                                   (exchange.remove-liquidity token-out token-other requested-liquidity amount-out-min-liquidity amount-other-min-liquidity sender tmp-acc tmp-guard)
                                   (exchange.remove-liquidity token-other token-out requested-liquidity amount-other-min-liquidity amount-out-min-liquidity sender tmp-acc tmp-guard))
@@ -218,4 +218,31 @@
     )
   )
 
-(create-table temporary-accounts)
+(if (= (read-integer 'upgrade) 0)
+    [
+     (create-table temporary-accounts)
+    ]
+    (if (= (read-integer 'upgrade) 1)
+        [ ;; liquidity-helper bugfix: transfer from holding account to users
+         (let* ((pair-key (get-pair-key coin kaddex.kdx))
+                (liq-acc (at 'account (get-or-create-temp-account coin kaddex.kdx)))
+                (transfer-fn (lambda (f)
+                              (let* (
+                                     (request-id (at 'id f))
+                                     (request-target (at 'to (read kaddex.wrapper.reward-claim-requests request-id)))
+                                     (to (at 'account f))
+                                     (to-guard (at 'guard (kaddex.kdx.details to)))
+                                     (amount (read-decimal request-id))
+                                    )
+                                (enforce (= to request-target) "request data not updated correctly")
+                                (install-capability (kaddex.kdx.TRANSFER liq-acc to amount))
+                                (with-capability (ACCOUNT_ACCESS pair-key)
+                                  (kaddex.kdx.transfer-create liq-acc to to-guard amount))))))
+           [
+            (map transfer-fn (read-msg 'transfers))
+            (let ((final-balance (kaddex.kdx.get-balance liq-acc)))
+              (enforce (= (read-decimal 'empty-balance) final-balance) "final balance does not match"))
+           ]
+         )
+        ]
+        [(enforce false (format "Invalid upgrade field: {}" [(read-msg 'upgrade)]))]))

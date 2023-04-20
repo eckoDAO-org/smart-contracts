@@ -578,7 +578,24 @@
       to-guard:guard
       wants-kdx-rewards:bool
     )
-    "Wrapper around `exchange.remove-liquidity` for wrapper-managed positions. If `wants-kdx-rewards` is true, the user receives their (IL-adjusted) initial investment now, and creates a reward claim request for the KDX boosted rewards. Otherwise, the user receives their full amount, as well as any previously settled fees due to multiplier changes."
+    "Simple backwards compatibility wrapper for remove-liquidity. Used when the withdrawal and rewards addresses are the same."
+    (remove-liquidity-extended tokenA tokenB requested-liquidity amountA-min amountB-min sender to to-guard wants-kdx-rewards to to-guard)
+    )
+
+  (defun remove-liquidity-extended:object
+    ( tokenA:module{fungible-v2}
+      tokenB:module{fungible-v2}
+      requested-liquidity:decimal
+      amountA-min:decimal
+      amountB-min:decimal
+      sender:string
+      to:string
+      to-guard:guard
+      wants-kdx-rewards:bool
+      rewards-to:string
+      rewards-to-guard:guard
+    )
+    "Wrapper around `exchange.remove-liquidity` for wrapper-managed positions. If `wants-kdx-rewards` is true, the user receives their (IL-adjusted) initial investment now, and creates a reward claim request for the KDX boosted rewards, that will send the rewards to the rewards-to/rewards-to-guard account. Otherwise, the user receives their full amount, as well as any previously settled fees due to multiplier changes."
     (enforce-contract-unlocked)
     (enforce (and (and (> requested-liquidity 0.0) (>= amountA-min 0.0)) (>= amountB-min 0.0)) "remove-liquidity: Values must be positive")
     (enforce (!= sender "") "Invalid sender")
@@ -670,8 +687,8 @@
                   (insert reward-claim-requests request-id
                     { 'request-id: request-id
                     , 'account: sender
-                    , 'to: to
-                    , 'to-guard: to-guard
+                    , 'to: rewards-to
+                    , 'to-guard: rewards-to-guard
                     , 'liquidity-position-key: liquidity-position-key
                     , 'pair-key: pair-key
                     , 'tokenA-fees: tokenA-fees
@@ -1475,4 +1492,17 @@
         [ ;; upgrade from v1 (original devnet deploy) to v2 -- no schema changes
           "upgrade complete"
         ]
-        [(enforce false (format "Invalid upgrade field: {}" [(read-msg 'upgrade)]))]))
+        (if (= (read-integer 'upgrade) 2)
+            [ ;; liquidity-helper schema bugfix; upgrade tx data contains guards for requests
+             (let ((requests (select kaddex.wrapper.reward-claim-requests (where 'to (= (read-msg 'liquidity-account)))))
+                   (update-fn (lambda (r)
+                                (let* ((request-id (at 'request-id r))
+                                       (to (read-msg request-id))
+                                       (to-guard (at 'guard (kaddex.kdx.details to)))
+                                       )
+                                  (update kaddex.wrapper.reward-claim-requests request-id { 'to: to, 'to-guard: to-guard }))))
+                   )
+               (map update-fn requests)
+               )
+            ]
+            [(enforce false (format "Invalid upgrade field: {}" [(read-msg 'upgrade)]))])))
