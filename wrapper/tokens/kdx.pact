@@ -308,7 +308,6 @@
   (defun update-supply (purpose:string delta:decimal account:string action:string)
     (require-capability (UPDATE_SUPPLY))
     (enforce-valid-purpose purpose)
-    (enforce (= (at 'chain-id (chain-data)) "2") "Can only update-supply on chain 2")
     (enforce (or (= action 'burn) (= action 'mint)) (format "Invalid supply action {}" [action]))
     (validate-account account)
     (enforce-unit delta)
