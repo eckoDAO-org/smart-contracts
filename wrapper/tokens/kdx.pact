@@ -83,6 +83,8 @@
   (defcap OPS ()
     (enforce-keyset 'kdx-ops-keyset))
 
+  (defcap UPDATE_SUPPLY () true)
+
   (defcap BURN
     ( sender:string
       amount:decimal
@@ -99,6 +101,7 @@
     )
     (enforce-contract-unlocked)
     (enforce-privilege MINT_PRIVILEGE)
+    (enforce (= (at 'chain-id (chain-data)) "2") "Can only mint on chain 2")
     (compose-capability (CREDIT receiver))
   )
 
@@ -303,7 +306,9 @@
   )
 
   (defun update-supply (purpose:string delta:decimal account:string action:string)
+    (require-capability (UPDATE_SUPPLY))
     (enforce-valid-purpose purpose)
+    (enforce (= (at 'chain-id (chain-data)) "2") "Can only update-supply on chain 2")
     (enforce (or (= action 'burn) (= action 'mint)) (format "Invalid supply action {}" [action]))
     (validate-account account)
     (enforce-unit delta)
@@ -319,7 +324,12 @@
             (enforce (< (+ minted delta) available)
               (format "Already minted {}, minting {} exceeds cap {}"
                 [ minted delta available ]))
-            (update supply-table purpose { 'total-minted: (+ delta (at 'total-minted supply)) }))
+            (let ((new-total-minted-purpose (+ delta (at 'total-minted supply)))
+                  (purpose-cap (get-purpose-max-cap purpose)))
+              (enforce (<= new-total-minted-purpose purpose-cap)
+                (format "Cannot mint {} ({}) for purpose {}: exceeds cap of {}"
+                  [ delta new-total-minted-purpose purpose ]))
+              (update supply-table purpose { 'total-minted: new-total-minted-purpose })))
       )
     )
   )
@@ -453,7 +463,8 @@
 
     (with-capability (BURN account amount)
       (debit account amount)
-      (update-supply purpose amount account 'burn)
+      (with-capability (UPDATE_SUPPLY)
+        (update-supply purpose amount account 'burn))
       amount
     )
   )
@@ -466,7 +477,8 @@
 
     (with-capability (MINT account amount)
       (credit account guard amount)
-      (update-supply purpose amount account 'mint)
+      (with-capability (UPDATE_SUPPLY)
+        (update-supply purpose amount account 'mint))
       amount
     )
   )
